@@ -1,0 +1,7 @@
+# Install after the vLLM fork, which pins torch 2.11 and compressed-tensors 0.15.0.1.
+transformers==5.9.0
+lm-eval==0.4.11
+datasets==4.8.5
+accelerate==1.13.0
+sentencepiece==0.2.1
+ray==2.58.0  # lm-eval imports it for its vLLM backend

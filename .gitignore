@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.pytest_cache/
+.tensorbridge/
+.gate_tmp/
+build/
+dist/
+.venv*/
+.cache/
+models/
+deps/
+logs/
+/results/
+/ae/*/results/

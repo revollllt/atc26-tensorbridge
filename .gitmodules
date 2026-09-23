@@ -1,0 +1,9 @@
+[submodule "vllm"]
+	path = vllm
+	url = ../tensorbridge-vllm-ae
+[submodule "integrations/deepgemm"]
+	path = integrations/deepgemm
+	url = ../tensorbridge-deepgemm-ae
+[submodule "integrations/flashinfer"]
+	path = integrations/flashinfer
+	url = ../tensorbridge-flashinfer-ae
