@@ -7,6 +7,8 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 export VLLM_PLUGINS=tensorbridge
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
 python_bin=${AE_PYTHON:-python3}
+# -P: do not put the repository root on sys.path, where the vllm/ submodule folder
+# would shadow the (editable) vllm package.
 quantization=${QUANTIZATION:-tensorbridge}
 output_dir=${OUTDIR:-$PWD/ae/figure13/results/$quantization}
 port=${AE_PORT:-19080}
@@ -22,7 +24,7 @@ if [[ "$quantization" == auto ]]; then
 else
   quantization_args=(--quantization "$quantization")
 fi
-"$python_bin" -m vllm.entrypoints.cli.main serve "$MODEL" \
+"$python_bin" -P -m vllm.entrypoints.cli.main serve "$MODEL" \
   --host 127.0.0.1 --port "$port" --gpu-memory-utilization 0.85 \
   --max-model-len 4096 --max-num-seqs 512 --max-num-batched-tokens 8192 \
   --kv-cache-dtype fp8 --calculate-kv-scales --tensor-parallel-size "${TP:-1}" \
@@ -45,7 +47,7 @@ curl -fsS "http://127.0.0.1:$port/v1/models" >/dev/null
 
 IFS=, read -r -a rates <<< "$REQUEST_RATE_LIST"
 for rate in "${rates[@]}"; do
-  "$python_bin" -m vllm.entrypoints.cli.main bench serve \
+  "$python_bin" -P -m vllm.entrypoints.cli.main bench serve \
     --backend openai --host 127.0.0.1 --port "$port" \
     --model "$MODEL" --tokenizer "$MODEL" \
     --dataset-name sharegpt --dataset-path "$SHAREGPT_PATH" \
