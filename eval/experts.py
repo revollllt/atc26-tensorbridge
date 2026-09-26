@@ -15,6 +15,7 @@ import re
 
 import torch
 import transformers.integrations.moe as hf_moe
+from compressed_tensors.compressors.pack_quantized.helpers import unpack_from_int32
 from compressed_tensors.quantization import QuantizationArgs
 from compressed_tensors.quantization.lifecycle.forward import fake_quantize
 from compressed_tensors.quantization.utils import compute_dynamic_scales_and_zp
@@ -49,9 +50,10 @@ def _fp4(packed):
 
 def _dequantize(t, fmt, method, alpha):
     """Stacked expert projections `[E, out, ...]` -> BF16 `[E, out, in]`."""
-    if fmt == "int-quantized":  # W4A8: int4 values in int8, BF16 scale per 128
-        w, s = t["weight"].float(), t["weight_scale"].float()
-        return (w * s.repeat_interleave(w.shape[-1] // s.shape[-1], dim=-1)).bfloat16()
+    if fmt == "pack-quantized":  # W4A8: int4 packed 8 per int32, BF16 scale per 128
+        s = t["weight_scale"].float()
+        w = unpack_from_int32(t["weight_packed"], 4, (*s.shape[:2], s.shape[-1] * 128)).float()
+        return (w * s.repeat_interleave(128, dim=-1)).bfloat16()
     packed, scale = t["weight_packed"], t["weight_scale"]
     if fmt == "mxfp4-pack-quantized":  # E8M0 scale per 32
         s = torch.exp2(scale.float() - 127)

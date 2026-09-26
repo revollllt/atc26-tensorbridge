@@ -24,8 +24,13 @@ IGNORE_MOE = IGNORE + ["re:.*mlp\\.gate$", "re:.*shared_expert_gate$", "re:.*lin
 
 
 def recipe(scheme, ignore):
-    if scheme == "W4A8":
-        return GPTQModifier(targets="Linear", scheme="W4A8", ignore=ignore)
+    if scheme == "W4A8":  # INT4 weights (group 128), dynamic per-token FP8 activations
+        w4a8 = preset_name_to_scheme("W4AFP8", ["Linear"])
+        w4a8.weights.actorder = "static"
+        # Packed INT4, as vLLM's CUTLASS W4A8 kernel loads it; compressed-tensors would
+        # otherwise store unpacked int8 values because the activations are quantized.
+        w4a8.format = "pack-quantized"
+        return GPTQModifier(config_groups={"group_0": w4a8}, ignore=ignore)
     if scheme in ("NVFP4A8", "NVFP4A8_FPMA"):  # NVFP4 weights, dynamic per-token FP8 activations
         nvfp4a8 = preset_name_to_scheme("NVFP4A16", ["Linear"])
         nvfp4a8.input_activations = preset_name_to_scheme("FP8_DYNAMIC", ["Linear"]).input_activations

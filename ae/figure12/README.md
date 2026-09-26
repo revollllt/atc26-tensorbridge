@@ -38,13 +38,25 @@ This writes one JSON file per batch size to `ae/figure12/results/`, for example
 `tensorbridge-256.json`, and prints the output throughput of each. For
 Llama-3.3-70B, add `--tensor-parallel-size 2`.
 
-The baselines run through the same script with vLLM's own kernels. Give each one its own output folder:
+The baselines run through the same script with vLLM's own kernels. They need
+two more checkpoints. NVFP4A16 Marlin uses the NVFP4A8 weights without activation
+quantization (the script only writes a new config and symlinks the weights).
+W4A8 CUTLASS uses INT4 weights with FP8 activations (`--scheme W4A8`, 10-20
+minutes):
 
 ```bash
-# NVFP4A16 Marlin: same NVFP4 checkpoint
-MODEL=models/qwen3_8b/NVFP4A8 QUANTIZATION=auto bash ae/figure12/measure.sh \
+python3 ae/figure12/nvfp4a16.py models/qwen3_8b/NVFP4A8 models/qwen3_8b/NVFP4A16
+.venv-quantize/bin/python eval/quantize.py --model /path/to/Qwen3-8B \
+  --scheme W4A8 --output models/qwen3_8b/W4A8
+```
+
+Give each baseline its own output folder:
+
+```bash
+# NVFP4A16 Marlin
+MODEL=models/qwen3_8b/NVFP4A16 QUANTIZATION=auto bash ae/figure12/measure.sh \
   --output-dir ae/figure12/results/marlin
-# W4A8 CUTLASS: the W4A8 checkpoint from eval/quantize.py
+# W4A8 CUTLASS
 MODEL=models/qwen3_8b/W4A8 QUANTIZATION=auto bash ae/figure12/measure.sh \
   --output-dir ae/figure12/results/w4a8
 # FP8: the original model, quantized by vLLM when it loads

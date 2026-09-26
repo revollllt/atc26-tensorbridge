@@ -43,4 +43,4 @@ A full sweep takes about 30 minutes. The rates we used for each model are:
 
 The baselines use the same `MODEL` and `QUANTIZATION` settings as in
 [Figure 12](../figure12/README.md), each with its own `OUTDIR`, for example
-`QUANTIZATION=auto OUTDIR=ae/figure13/results/marlin` with the NVFP4 checkpoint.
+`MODEL=models/qwen3_8b/NVFP4A16 QUANTIZATION=auto OUTDIR=ae/figure13/results/marlin`.
