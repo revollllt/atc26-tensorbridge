@@ -10,7 +10,7 @@ import torch
 import torch.utils.cpp_extension
 from filelock import FileLock
 
-from tensorbridge.jit import codegen, compiler
+from tensorbridge.jit import codegen
 from tensorbridge.jit.codegen import GemmConfig
 from tensorbridge.jit.cuda_paths import filter_cuda_paths
 
@@ -21,6 +21,8 @@ TUNED_DIR = Path(__file__).resolve().parents[1] / "tuned"
 @functools.cache
 def load_launcher() -> None:
     """Build and load `csrc/launcher`, which registers `torch.ops.tensorbridge`."""
+    from tensorbridge.jit import compiler
+
     sources = sorted(CSRC_DIR.glob("**/*.[ch]pp")) + sorted(CSRC_DIR.glob("**/*.h"))
     digest = hashlib.sha256(b"".join(path.read_bytes() for path in sources)).hexdigest()[:16]
     python_tag = f"py{sys.version_info.major}{sys.version_info.minor}"
@@ -69,6 +71,8 @@ def select_config(
 @functools.cache
 def get_kernel(shape_n: int, shape_k: int, config: GemmConfig) -> int:
     """Compile (or fetch from the disk cache) and register one kernel; returns its id."""
+    from tensorbridge.jit import compiler
+
     load_launcher()
     torch.cuda.set_device(torch.cuda.current_device())  # the driver API needs a current context
     source = codegen.generate(shape_n, shape_k, config)

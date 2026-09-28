@@ -7,7 +7,7 @@ name = "tensorbridge"
 version = "0.1.0"
 description = "TensorBridge: a fused NVFP4 W4A8 GEMM kernel for Hopper GPUs"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12,<3.13"
 dependencies = [
     "torch",
     "triton",
