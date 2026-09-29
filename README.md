@@ -70,6 +70,14 @@ pip install --no-build-isolation -e .
 pip install -r ae/requirements.txt
 ```
 
+For a standalone editable install in a fresh environment, install the build
+tools before using `--no-build-isolation`:
+
+```bash
+pip install setuptools wheel
+pip install --no-build-isolation -e .
+```
+
 TensorBridge compiles its kernels on first use, so the CUDA toolkit must be
 installed (set `CUDA_HOME` if it is not under `/usr/local/cuda`) and GCC must
 be version 11 or newer (set `CC` and `CXX` otherwise). If you build on a
