@@ -87,7 +87,8 @@ def perplexity(args):
 
     tokenizer = AutoTokenizer.from_pretrained(args.tokenizer, use_fast=False,
                                               trust_remote_code=True)
-    text = "\n\n".join(load_dataset("wikitext", "wikitext-2-raw-v1", split="test")["text"])
+    text = "\n\n".join(load_dataset("Salesforce/wikitext", "wikitext-2-raw-v1",
+                                    split="test")["text"])
     ids = tokenizer(text, return_tensors="pt").input_ids
     blocks = ids.numel() // BLOCK
     blocks = min(blocks, args.limit or blocks)
