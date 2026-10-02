@@ -1,4 +1,5 @@
 # Install after the vLLM fork, which pins torch 2.11 and compressed-tensors 0.15.0.1.
+compressed-tensors==0.15.0.1  # same as the vLLM fork
 transformers==5.9.0
 lm-eval==0.4.11
 datasets==4.8.5
