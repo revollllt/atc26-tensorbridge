@@ -89,7 +89,7 @@
 
 ## 范围与技术约束
 
-- 范围：`tensorbridge/`（kernel、JIT、配置选择、vLLM 插件）、`tests/`、`docs/`。`ae/` 和 `eval/` 只接受维护性修复。
+- 范围：`tensorbridge/`（kernel、JIT、配置选择、vLLM 插件）、`tests/`、`tools/`（测量基座与代价模型拟合工具）、`docs/`、`specs/`。`ae/` 和 `eval/` 只接受维护性修复。
 - 目标硬件：Hopper（sm_90a）。参考设备为 H100 SXM（132 SM）和 H20（78 SM）。
 - 优化 backlog：`docs/OPTIMIZATION_CHECKLIST.md`。代码结构：`docs/DESIGN.md`。
 - 已有的 shape 特化产物属于待移除项（checklist E4），新代码不得依赖它们：`sm90_tuned.hpp`、`tuned/NVIDIA_H100_80GB_HBM3.json`，以及 `sm90.hpp` 中的经验阈值。
@@ -112,4 +112,4 @@
 - `/speckit-plan` 的 Constitution Check 必须逐条核对原则 I 到 VI。确有必要违反时，必须在 plan 的 Complexity Tracking 中说明理由和替代方案。
 - 运行时指导文档：`docs/OPTIMIZATION_CHECKLIST.md`、`docs/DESIGN.md`。
 
-**Version**: 1.1.0 | **Ratified**: 2026-10-28 | **Last Amended**: 2026-10-28
+**Version**: 1.1.1 | **Ratified**: 2026-10-28 | **Last Amended**: 2026-10-28
