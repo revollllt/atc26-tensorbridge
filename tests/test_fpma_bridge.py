@@ -106,7 +106,7 @@ def test_kernel_matches_bridge_ref_tighter_than_exact():
     inputs_hp = torch.randn((m, k), dtype=torch.bfloat16, device="cuda:0")
 
     packed, scale, gscale = nvfp4.quantize(weight_hp)
-    weight = nvfp4.prepare(packed, scale, gscale, alpha=1.0)  # the reference omits alpha
+    weight = nvfp4.prepare(packed, scale, gscale)
     out = tensorbridge.fp8_nvfp4_gemm(*fp8.quantize(inputs_hp), weight).float()
     codes = unpack_fp4_packed_to_codes(packed)
 

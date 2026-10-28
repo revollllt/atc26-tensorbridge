@@ -1,10 +1,19 @@
 #!/usr/bin/env python3
-"""Plot Figures 12 and 13 (serving throughput) from a measurement CSV."""
+"""Plot Figures 12 and 13 (serving throughput).
+
+The data comes from `figure1{2,3}/data/measurements.csv` (our runs), from another
+CSV with `--input`, or from the JSON files that `measure.sh` writes with
+`--results`: `<results>/<model>/<method>/batch-<B>.json` (Figure 12) or
+`rate-<R>.json` (Figure 13). `--results` also saves the collected rows to
+`<results>/measurements.csv`.
+"""
 
 from __future__ import annotations
 
 import argparse
 import csv
+import json
+import re
 from pathlib import Path
 
 import matplotlib
@@ -15,6 +24,7 @@ from matplotlib.ticker import FuncFormatter, MultipleLocator
 
 
 FIGURES = Path(__file__).resolve().parents[1]
+BATCH_SIZES = (1, 4, 16, 64, 256)  # Figure 12 x axis
 PAGE_WIDTH = 736.56
 PAGE_HEIGHT = 385.92
 PANEL_WIDTH = 302.4
@@ -38,6 +48,31 @@ METHODS = (
 )
 
 
+def collect(results: Path, figure: int) -> list[dict[str, str]]:
+    """Rows in the measurements.csv format from the JSON files under `results`."""
+    rows = []
+    pattern = r"batch-(\d+)\.json" if figure == 12 else r"rate-([\d.]+|inf)\.json"
+    for path in sorted(results.glob("*/*/*.json")):
+        match = re.fullmatch(pattern, path.name)
+        if not match:
+            continue
+        model, method = path.parts[-3], path.parts[-2]
+        data = json.loads(path.read_text())
+        if figure == 12:
+            rows.append({"model": model, "method": method, "num_prompts": match[1],
+                         "output_tok_per_s": data["output_tok_per_s"]})
+        else:
+            rows.append({"model": model, "method": method, "request_rate": match[1],
+                         "request_throughput": data["request_throughput"]})
+    if not rows:
+        raise SystemExit(f"No measurements under {results}/<model>/<method>/")
+    with (results / "measurements.csv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
+    return [{key: str(value) for key, value in row.items()} for row in rows]
+
+
 def format_thousands(value: float, position: float) -> str:
     if value == 0:
         return "0"
@@ -49,20 +84,20 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--figure", type=int, choices=(12, 13), required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument(
-        "--input", type=Path, help="Figure 12 or Figure 13 measurement CSV"
-    )
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--input", type=Path, help="measurement CSV")
+    source.add_argument("--results", type=Path, help="folder written by measure.sh")
     args = parser.parse_args()
 
-    if args.figure == 12:
-        source = args.input or FIGURES / "figure12/data/measurements.csv"
-        with source.open(newline="") as stream:
+    if args.results:
+        rows = collect(args.results, args.figure)
+    else:
+        path = args.input or FIGURES / f"figure{args.figure}/data/measurements.csv"
+        with path.open(newline="") as stream:
             rows = list(csv.DictReader(stream))
+    if args.figure == 12:
         x_field, y_field = "num_prompts", "output_tok_per_s"
     else:
-        source = args.input or FIGURES / "figure13/data/measurements.csv"
-        with source.open(newline="") as stream:
-            rows = list(csv.DictReader(stream))
         x_field, y_field = "request_rate", "request_throughput"
 
     plt.rcParams.update(
@@ -102,7 +137,7 @@ def main() -> None:
         if args.figure == 12:
             axis.set_xlim(-0.18, 4.18)
             axis.set_ylim(0, offline_limit)
-            axis.set_xticks(range(5), ("1", "4", "16", "64", "256"))
+            axis.set_xticks(range(len(BATCH_SIZES)), map(str, BATCH_SIZES))
             axis.yaxis.set_major_locator(MultipleLocator(offline_step))
             axis.yaxis.set_minor_locator(MultipleLocator(offline_step / 2))
             axis.yaxis.set_major_formatter(FuncFormatter(format_thousands))
@@ -129,10 +164,13 @@ def main() -> None:
             points = sorted(
                 (float(row[x_field]), float(row[y_field])) for row in rows
                 if row["model"] == model and row["method"] == method
+                and (args.figure == 13 or int(float(row[x_field])) in BATCH_SIZES)
             )
             series_by_method[method] = points
+            if not points:
+                continue
             if args.figure == 12:
-                plot_x = [(1, 4, 16, 64, 256).index(int(point[0])) for point in points]
+                plot_x = [BATCH_SIZES.index(int(point[0])) for point in points]
             else:
                 plot_x = [point[0] for point in points]
             line = axis.plot(
@@ -144,18 +182,22 @@ def main() -> None:
             legend_handles.append(line)
             legend_labels.append(method_label)
 
+        axis.text(0.024, 0.91, model_label, transform=axis.transAxes, ha="left", va="top",
+                  fontsize=26, fontweight="bold", color="#111111")
+        if not any(series_by_method.values()):
+            axis.text(0.5, 0.45, "not measured", transform=axis.transAxes, ha="center",
+                      va="center", fontsize=18, color="#888888")
+            continue
         baseline = dict(series_by_method["bf16"])
-        best_x, best_ratio = max(
-            ((x, throughput / baseline[x]) for x, throughput in
-             series_by_method["tensorbridge"]),
-            key=lambda point: point[1],
-        )
+        ratios = [(x, throughput / baseline[x]) for x, throughput in
+                  series_by_method["tensorbridge"] if x in baseline]
+        if not ratios:
+            continue
+        best_x, best_ratio = max(ratios, key=lambda point: point[1])
         if args.figure == 12:
             annotation = f"Max vs BF16\n{best_ratio:.2f}x @ B={best_x:g}"
         else:
             annotation = f"Max vs BF16\n{best_ratio:.2f}x @ R={best_x:g}"
-        axis.text(0.024, 0.91, model_label, transform=axis.transAxes, ha="left", va="top",
-                  fontsize=26, fontweight="bold", color="#111111")
         if args.figure == 13 and model_index == 0:
             axis.text(0.97, 0.35, annotation, transform=axis.transAxes,
                       ha="right", va="top", fontsize=18, fontweight="bold",
@@ -165,14 +207,19 @@ def main() -> None:
                       ha="left", va="top", fontsize=18, fontweight="bold",
                       linespacing=0.85, color="#0b2f50")
 
+    handle_by_label = dict(zip(legend_labels, legend_handles))
+    labels = [method[1] for method in METHODS if method[1] in handle_by_label]
     legend = figure.legend(
-        legend_handles[:5], legend_labels[:5], loc="upper center", ncol=5,
+        [handle_by_label[label] for label in labels], labels, loc="upper center",
+        ncol=max(1, len(labels)),
         bbox_to_anchor=(0.52, 0.985), frameon=True, fancybox=False,
         edgecolor="#999999", facecolor="white", fontsize=15.5,
         borderpad=0.25, handlelength=2.15, handletextpad=0.38, columnspacing=0.94,
     )
     legend.get_frame().set_linewidth(0.55)
-    legend.get_texts()[-1].set_color("#0b2f50")
+    for text in legend.get_texts():
+        if "ours" in text.get_text():
+            text.set_color("#0b2f50")
     if args.figure == 12:
         figure.supylabel("Output throughput (token/s)", x=0.019, y=0.5,
                         fontsize=18, fontweight="bold")

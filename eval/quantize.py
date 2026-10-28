@@ -41,7 +41,7 @@ def recipe(scheme, ignore):
 
 def fpma_rounding():
     """NVFP4A8_FPMA: GPTQ rounds each weight to the nearest value TensorBridge's bridge
-    produces for its group's scale byte (SNC, alpha 1) instead of the nearest FP4 value,
+    produces for its group's scale byte (SNC) instead of the nearest FP4 value,
     so its error feedback also absorbs the bridge's approximation. The checkpoint stays
     plain NVFP4: every bridge value is within 12.5% of its code, so compression stores it."""
     import llmcompressor.modifiers.gptq.gptq_quantize as gptq

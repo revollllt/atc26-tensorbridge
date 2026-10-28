@@ -6,6 +6,9 @@ NVFP4 weights, for Hopper (sm_90). The layout follows the path of a call.
 ```text
 tensorbridge/
   gemm.py, linear.py          Python entry points
+  autotune.py                 offline per-shape config search
+  tuned/<GPU name>.json       autotuned configs, read before the heuristics
+  vllm_plugin.py              vLLM linear-method plugin
   quant/nvfp4.py              NVFP4 quantization + offline weight preparation
   quant/fp8.py                per-token FP8 activation quantization (Triton)
   jit/codegen.py              generated translation unit: Config + WGMMA instruction
@@ -40,8 +43,7 @@ encoding-domain add `byte = prefolded_scale + (sign<<7 | mag<<2)`, then clears
 true-zero lanes.
 
 - Device bridge, both mask variants: `include/tensorbridge/dequant/fpma.cuh`.
-- Overflow-safe scale prefolding (`raw_e4m3 - 0x1C`, global `*= 6`, optionally
-  times a debias factor `alpha`) and offline
+- Overflow-safe scale prefolding (`raw_e4m3 - 0x1C`, global `*= 6`) and offline
   SNC recoding (0.5 subnormal + zero marker): `quant/nvfp4.py` (`prepare`,
   `recode_snc`).
 - Python reproduction + byte-level checks: `tests/fpma_bridge_reference.py`,
@@ -83,6 +85,8 @@ wave-fill ratio `f` and an estimated reduction budget.
   `select_config`).
 - Measured per-shape overrides, kept out of the model:
   `csrc/heuristics/sm90_tuned.hpp`.
+- Autotuned configs for exact shapes, used first when present: `tuned/<GPU name>.json`
+  (`jit/runtime.py` `select_config`; written by `autotune.py`).
 - Device side of the same split: `include/tensorbridge/scheduler/gemm.cuh`;
   ordered reduction of the slices: `memory/s2g.cuh`.
 
@@ -93,18 +97,13 @@ wave-fill ratio `f` and an estimated reduction budget.
 - TMA descriptors and the driver-API launch on the current CUDA stream (so calls
   can be graph-captured): `csrc/launcher/`.
 
-## Scope and known limitations
+## Scope
 
 - Dense GEMM, `N` and `K` multiples of 128, BF16 output, Hopper (sm_90) only.
 - Weight scales must fit the FPMA bridge: raw E4M3 bytes at most `0x7E`
   (`quant/nvfp4.py`; `prepare(..., clamp_scale=True)` for foreign checkpoints).
   Groups with a byte below `0x1C` are zeroed.
-- Stream-K outputs are not bitwise reproducible run to run once a tile is cut
-  into three or more slices: every slice is rounded to BF16 on its own and the
-  slices after the first are added in whatever order their CTAs take the tile's
-  lock, and BF16 addition is not associative. The spread is one or two BF16
-  ULPs. Data-parallel configs are deterministic.
-- Multicast clusters are data parallel only. Combined with Stream-K, the
-  members of a cluster sporadically stored stale shared memory in the tail of
-  their output tile; the kernel rejects that combination at compile time and
-  the heuristics never produce it.
+- Stream-K tiles cut into three or more slices add the slices in arrival order,
+  so their BF16 outputs can differ by one or two ULPs between runs.
+  Data-parallel configs are deterministic.
+- Multicast clusters are used with data-parallel tiles only.

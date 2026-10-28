@@ -14,7 +14,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", required=True)
     parser.add_argument("--quantization", default="tensorbridge")
-    parser.add_argument("--batch-sizes", nargs="+", type=int, default=[1, 4, 16, 64, 256])
+    parser.add_argument("--batch-sizes", nargs="+", type=int, default=[1, 4, 16, 64, 256],
+                        choices=[1, 4, 16, 64, 256], help="the points of Figure 12")
     parser.add_argument("--input-len", type=int, default=1024)
     parser.add_argument("--output-len", type=int, default=512)
     parser.add_argument("--tensor-parallel-size", type=int, default=1)
@@ -69,7 +70,7 @@ def main() -> None:
             "output_tokens": output_tokens,
             "output_tok_per_s": output_tokens / elapsed,
         }
-        destination = args.output_dir / f"{args.quantization}-{batch_size}.json"
+        destination = args.output_dir / f"batch-{batch_size}.json"
         destination.write_text(json.dumps(measurement, indent=2) + "\n")
         print(f"{destination}: {measurement['output_tok_per_s']:.2f} output token/s", flush=True)
 

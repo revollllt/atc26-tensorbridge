@@ -1,10 +1,4 @@
-"""Out-of-tree NVFP4 linear integration for the AE vLLM fork.
-
-`TENSORBRIDGE_FPMA_ALPHA` sets the bridge's global-scale factor: a number (default 1)
-or `lsq` for a per-layer least-squares fit (`nvfp4.lsq_alpha`).
-"""
-
-import os
+"""Out-of-tree NVFP4 linear integration for the AE vLLM fork."""
 
 import torch
 from compressed_tensors.quantization import QuantizationArgs
@@ -46,11 +40,6 @@ def tensorbridge_linear_fake(
     return None
 
 
-def _alpha(packed: torch.Tensor, scale: torch.Tensor) -> float:
-    alpha = os.environ.get("TENSORBRIDGE_FPMA_ALPHA", str(nvfp4.FPMA_ALPHA))
-    return nvfp4.lsq_alpha(packed, scale) if alpha == "lsq" else float(alpha)
-
-
 class TensorBridgeScheme(CompressedTensorsW4A16Fp4):
     @classmethod
     def get_min_capability(cls) -> int:
@@ -65,7 +54,6 @@ class TensorBridgeScheme(CompressedTensorsW4A16Fp4):
             layer.weight_packed.data,
             layer.weight_scale.data,
             (1.0 / inverse_scales[0]).view(1),
-            alpha=_alpha(layer.weight_packed.data, layer.weight_scale.data),
         )
         del layer.weight_packed, layer.weight_scale, layer.weight_global_scale
         layer.register_buffer("tensorbridge_weight", prepared.weight)

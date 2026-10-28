@@ -1,16 +1,29 @@
 #!/usr/bin/env bash
+# Measure one model and method of Figure 13 on an H100, then replot Figure 13
+# from everything measured so far (ae/figure13/results/<NAME>/<METHOD>/).
+# Usage: NAME=qwen3_8b METHOD=tensorbridge MODEL=models/qwen3_8b/NVFP4A8 \
+#          SHAREGPT_PATH=... REQUEST_RATE_LIST=8,16,... bash ae/figure13/measure.sh
 set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
-: "${MODEL:?Set MODEL to a local checkpoint path}"
+: "${MODEL:?Set MODEL to the checkpoint (or the original model for fp8 and bf16)}"
+: "${NAME:?Set NAME to the model name used in the figure}"
+: "${METHOD:?Set METHOD to tensorbridge, nvfp4a16, w4a8, fp8 or bf16}"
+case "$NAME" in
+  llama3_8b|qwen3_8b|qwen3_14b|llama33_70b) ;;
+  *) echo "NAME must be llama3_8b, qwen3_8b, qwen3_14b or llama33_70b" >&2; exit 2 ;;
+esac
+case "$METHOD" in
+  tensorbridge) quantization=tensorbridge ;;
+  fp8) quantization=fp8 ;;  # vLLM quantizes the BF16 model when it loads
+  nvfp4a16|w4a8|bf16) quantization=auto ;;  # as the checkpoint says
+  *) echo "METHOD must be tensorbridge, nvfp4a16, w4a8, fp8 or bf16" >&2; exit 2 ;;
+esac
 : "${SHAREGPT_PATH:?Set SHAREGPT_PATH to the ShareGPT trace}"
 : "${REQUEST_RATE_LIST:?Set comma-separated request rates}"
 export VLLM_PLUGINS=tensorbridge
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1
 python_bin=${AE_PYTHON:-python3}
-# -P: do not put the repository root on sys.path, where the vllm/ submodule folder
-# would shadow the (editable) vllm package.
-quantization=${QUANTIZATION:-tensorbridge}
-output_dir=${OUTDIR:-$PWD/ae/figure13/results/$quantization}
+output_dir=$PWD/ae/figure13/results/$NAME/$METHOD
 port=${AE_PORT:-19080}
 mkdir -p "$output_dir"
 
@@ -24,6 +37,8 @@ if [[ "$quantization" == auto ]]; then
 else
   quantization_args=(--quantization "$quantization")
 fi
+# -P: do not put the repository root on sys.path, where the vllm/ submodule folder
+# would shadow the (editable) vllm package.
 "$python_bin" -P -m vllm.entrypoints.cli.main serve "$MODEL" \
   --host 127.0.0.1 --port "$port" --gpu-memory-utilization 0.85 \
   --max-model-len 4096 --max-num-seqs 512 --max-num-batched-tokens 8192 \
@@ -57,3 +72,7 @@ for rate in "${rates[@]}"; do
     --save-result --save-detailed --result-dir "$output_dir" \
     --result-filename "rate-${rate}.json" "$@"
 done
+kill "$server_pid" 2>/dev/null || true
+wait "$server_pid" 2>/dev/null || true
+"$python_bin" ae/figure12/plot.py --figure 13 --results ae/figure13/results \
+  --output ae/figure13/results/figure13.png

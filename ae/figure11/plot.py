@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Plot paper-shape kernel speedups from the Markdown latency table."""
+"""Plot Figure 11 from a Markdown latency table: `data/latencies.md` (our runs) or
+the `measured.md` that `measure.py` writes. Kernels a measurement lacks
+(TensorRT-LLM and QServe, which need their own environments) are filled in from
+`data/latencies.md`."""
 
 from __future__ import annotations
 
@@ -15,7 +18,7 @@ from matplotlib.ticker import MultipleLocator
 
 
 DEFAULT_INPUT = Path(__file__).resolve().parent / "data/latencies.md"
-DEFAULT_OUTPUT = Path("ae/figure11/results/figure11.png")
+DEFAULT_OUTPUT = Path("ae/figure11/results/paper-data/figure11.png")
 
 BASELINE_DISPLAY = [
     ("Torch BF16", "cuBLAS BF16", "#ffffff", "///"),
@@ -28,6 +31,9 @@ BASELINE_DISPLAY = [
     ("NVFP4A16 Marlin", "NVFP4A16 Marlin", "#756388", None),
     ("NVFP4A8 (ours)", "NVFP4A8 (ours)", "#0b2f50", None),
 ]
+
+# Kernels measure.py cannot run here; a measurement takes them from our data.
+FROM_OUR_DATA = ["QServe W4A8", "TRT-LLM FP8", "TRT-LLM W4A8", "TRT-LLM W4A16"]
 
 M_ORDER = [16, 128, 512, 4096]
 MODEL_ORDER = ["Qwen3-8B", "Llama3-70B", "DeepSeek-V3"]
@@ -156,7 +162,7 @@ def plot(records: dict[int, list[dict[str, object]]], output: Path) -> None:
     fig, axes = plt.subplots(
         len(M_ORDER),
         1,
-        figsize=(21.0, 8.65),
+        figsize=(21.0, 12.00),
         sharex=True,
         constrained_layout=False,
     )
@@ -350,7 +356,12 @@ def main() -> None:
     args = parser.parse_args()
 
     rows = parse_markdown_latency_table(args.input)
-    # Plot the baselines present in the input (a new measurement may lack some).
+    ours = {row["shape_id"]: row for row in parse_markdown_latency_table(DEFAULT_INPUT)}
+    filled = [raw for raw in FROM_OUR_DATA if raw not in rows[0]]
+    for row in rows:
+        row.update({raw: ours[row["shape_id"]][raw] for raw in filled})
+    if filled:
+        print(f"From {DEFAULT_INPUT.name}: {', '.join(filled)}")
     BASELINE_DISPLAY[:] = [b for b in BASELINE_DISPLAY if b[0] in rows[0]]
     records = build_records(rows)
     plot(records, args.output)

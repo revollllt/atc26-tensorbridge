@@ -9,7 +9,7 @@ Checkpoint format (what `quantize` returns and `prepare` accepts):
 Everything the kernel would otherwise pay for per launch is moved into
 `prepare`, which runs once per layer:
 
-    1. scale prefold       raw E4M3 byte - 0x1C, and global_scale * 6 * alpha
+    1. scale prefold       raw E4M3 byte - 0x1C, and global_scale * 6
     2. SNC recoding        0.5 -> magnitude 0, zero -> magnitude 1
     3. thread-order repack one 16-byte vector per consumer thread
 
@@ -30,12 +30,6 @@ E4M3_MAX = 448.0
 PREFOLD_DELTA = 0x1C
 RAW_SCALE_MIN, RAW_SCALE_MAX = 0x1C, 0x7E
 
-# Optional factor folded into the global scale. 1 keeps the bridge's values; the
-# first-order debias of its byte add, 1 - (5/16 eligible cases) * (1/8 E4M3 binade
-# ULP) ~= 0.961, lowers zero-shot error but raises perplexity.
-FPMA_ALPHA = 1.0
-
-_E2M1_VALUES = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)
 # Rounding boundaries between the E2M1 magnitudes 0, 0.5, 1, 1.5, 2, 3, 4, 6.
 _E2M1_MIDPOINTS = (0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0)
 
@@ -46,7 +40,7 @@ class NVFP4Weight:
 
     weight: torch.Tensor  # int32 [N, K / 8], SNC-recoded, in thread order
     scale: torch.Tensor  # fp8 [K / 16, N], prefolded
-    global_scale: torch.Tensor  # fp32 [1], times 6 * alpha
+    global_scale: torch.Tensor  # fp32 [1], times 6
     # Lock words ordering the Stream-K slices of an output tile; all zero between launches.
     locks: torch.Tensor  # int32 [1024]
 
@@ -81,15 +75,13 @@ def prepare(
     scale: torch.Tensor,
     global_scale: torch.Tensor | None = None,
     clamp_scale: bool = False,
-    alpha: float = FPMA_ALPHA,
 ) -> NVFP4Weight:
     """Checkpoint format -> kernel layout. `N` and `K` must be multiples of 128.
 
     Groups whose scale byte is below the bridge's range are zeroed, as their
     weights are negligible. Larger scale bytes raise, unless `clamp_scale` is
     set, which changes the affected groups' values and is meant for benchmarking
-    checkpoints that were not quantized for this kernel. `alpha` is folded into
-    the global scale.
+    checkpoints that were not quantized for this kernel.
     """
     n, half_k = packed.shape
     k = half_k * 2
@@ -117,24 +109,9 @@ def prepare(
     return NVFP4Weight(
         weight=to_thread_order(recode_snc(packed)).view(torch.int32),
         scale=prefolded.t().contiguous(),
-        global_scale=global_scale.float().view(1) * (E2M1_MAX * alpha),
+        global_scale=global_scale.float().view(1) * E2M1_MAX,
         locks=torch.zeros(1024, dtype=torch.int32, device=packed.device),
     )
-
-
-def lsq_alpha(packed: torch.Tensor, scale: torch.Tensor) -> float:
-    """Per-layer `alpha` with the least squared error between the bridge's weights and
-    the exact NVFP4 dequantization; computed offline from the checkpoint."""
-    raw = scale.view(torch.uint8).to(torch.int32).unsqueeze(-1)
-    codes = torch.stack((packed & 0xF, packed >> 4), -1).view(*scale.shape, 16).to(torch.int32)
-    magnitude = codes & 0x7
-    kept = (magnitude != 0) & (raw >= RAW_SCALE_MIN)
-    values = torch.tensor(_E2M1_VALUES, device=packed.device)
-    exact = values[magnitude] * scale.float().unsqueeze(-1) / E2M1_MAX
-    byte = (raw - PREFOLD_DELTA).clamp(min=0) + (torch.where(magnitude == 1, 0, magnitude) << 2)
-    bridge = byte.to(torch.uint8).view(torch.float8_e4m3fn).float()
-    exact, bridge = exact * kept, bridge * kept
-    return ((exact * bridge).sum() / (bridge * bridge).sum()).item()
 
 
 def recode_snc(packed: torch.Tensor) -> torch.Tensor:

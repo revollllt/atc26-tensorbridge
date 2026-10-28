@@ -1,7 +1,7 @@
 """WikiText2 perplexity (Table 3) or mean zero-shot accuracy (Table 4) of one method.
 
 `ours` emulates the bridge's weights in Hugging Face; `ours_kernel` runs the
-TensorBridge kernel through the vLLM plugin. Both apply `--alpha`.
+TensorBridge kernel through the vLLM plugin.
 """
 
 import argparse
@@ -11,8 +11,6 @@ import os
 from pathlib import Path
 
 import torch
-
-from tensorbridge.quant.nvfp4 import FPMA_ALPHA
 
 METHODS = ["bf16", "w4a8", "nvfp4a16", "nvfp4", "mxfp4", "nvfp4a8", "ours_nosnc", "ours",
            "ours_kernel"]
@@ -29,8 +27,6 @@ def parse_args():
     p.add_argument("--tokenizer", required=True, help="base model")
     p.add_argument("--metric", choices=["ppl", "tasks"], required=True)
     p.add_argument("--output", type=Path, required=True)
-    p.add_argument("--alpha", type=lambda v: v if v == "lsq" else float(v), default=FPMA_ALPHA,
-                   help="global-scale factor of ours*: a number, or lsq (per layer)")
     p.add_argument("--batch-size", default="auto",
                    help="Hugging Face task batch size; auto probes the largest one up to 64")
     p.add_argument("--limit", type=int, help="short check: PPL blocks, or examples per task")
@@ -44,7 +40,7 @@ def load_hf(args):
     import experts
 
     if args.method in ("ours", "ours_nosnc"):
-        emulate.fpma(snc=args.method == "ours", alpha=args.alpha)
+        emulate.fpma(snc=args.method == "ours")
     elif args.method == "mxfp4":
         emulate.mxfp4()
     config = AutoConfig.from_pretrained(args.model, trust_remote_code=True)
@@ -62,19 +58,18 @@ def load_hf(args):
         args.model, config=config, dtype=torch.bfloat16, trust_remote_code=True,
         device_map="cuda", **kwargs).eval()
     if group and experts.has_quantized_experts(args.model):  # MoE: see eval/experts.py
-        experts.load(model, args.model, args.method, args.alpha, group)
+        experts.load(model, args.model, args.method, group)
     return model
 
 
-def vllm_env(args):
-    os.environ["TENSORBRIDGE_FPMA_ALPHA"] = str(args.alpha)
+def vllm_env():
     os.environ["VLLM_WORKER_MULTIPROC_METHOD"] = "spawn"  # CUDA is already initialized
 
 
 def load_vllm(args, max_model_len):
     from vllm import LLM
 
-    vllm_env(args)
+    vllm_env()
     return LLM(args.model, tokenizer=args.tokenizer, quantization="tensorbridge",
                dtype="bfloat16", max_model_len=max_model_len, gpu_memory_utilization=0.85,
                enforce_eager=True)  # no compilation or CUDA graphs: same numerics, fewer moving parts
@@ -121,7 +116,7 @@ def zero_shot(args):
     if args.method == "ours_kernel":
         from lm_eval.models.vllm_causallms import VLLM
 
-        vllm_env(args)
+        vllm_env()
         lm = VLLM(pretrained=args.model, tokenizer=args.tokenizer, quantization="tensorbridge",
                   dtype="bfloat16", max_model_len=4096, gpu_memory_utilization=0.85,
                   enforce_eager=True, batch_size="auto")
@@ -139,7 +134,6 @@ def main():
     args = parse_args()
     result = perplexity(args) if args.metric == "ppl" else zero_shot(args)
     result.update(method=args.method, model=args.model, limit=args.limit,
-                  alpha=args.alpha if args.method.startswith("ours") else None,
                   torch=torch.__version__)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2) + "\n")

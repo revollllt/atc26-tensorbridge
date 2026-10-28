@@ -1,73 +1,56 @@
 # Figure 12: offline serving throughput
 
-Figure 12 compares the output throughput of vLLM with TensorBridge against BF16,
-FP8, W4A8 (CUTLASS) and NVFP4A16 (Marlin). Each request has 1024 input and 512
-output tokens; the batch size goes from 1 to 256. All runs use an FP8 KV cache.
+Figure 12 compares the output throughput of vLLM with TensorBridge against BF16, FP8,
+W4A8 (CUTLASS) and NVFP4A16 (Marlin). It covers Llama-3-8B, Qwen3-8B, Qwen3-14B and
+Llama-3.3-70B. Each request has 1024 input and 512 output tokens, and the batch sizes are
+1, 4, 16, 64 and 256. All runs use an FP8 KV cache.
 
 ## Replot from our data (CPU only)
 
 ```bash
-pip install -r ae/requirements.txt
 bash ae/figure12/reproduce.sh
 ```
 
-This reads `data/measurements.csv` (4 models x 5 methods x 5 batch sizes) and
-writes `ae/figure12/results/figure12.png` and `.pdf`, which should match
-`reference.pdf`. Across the four models and five batch sizes, TensorBridge's
-geometric-mean throughput is 1.64x that of BF16, 1.09x FP8, 1.13x W4A8 and 1.34x
-NVFP4A16 Marlin (Section 5.4.1).
+This reads `ae/figure12/data/measurements.csv` (4 models x 5 methods x 5 batch sizes) and
+writes `ae/figure12/results/paper-data/figure12.png` and `.pdf`. Compare with
+`ae/figure12/reference.pdf`.
 
-## Measure on an H100
+## Measure on an H100 (a few minutes per model and method)
 
-You need the environment from the [top-level README](../../README.md) and an
-NVFP4 checkpoint of the model. Create it in the checkpoint environment described
-in [`eval/README.md`](../../eval/README.md), with the `NVFP4A8` scheme:
+This needs:
 
-```bash
-.venv-quantize/bin/python eval/quantize.py --model /path/to/Qwen3-8B \
-  --scheme NVFP4A8 --output models/qwen3_8b/NVFP4A8
-```
+- the environment from the [top-level README](../../README.md);
+- the base model and its `NVFP4A8`, `NVFP4A16` and `W4A8` checkpoints, from
+  [`eval/README.md`](../../eval/README.md#checkpoints).
 
-Then measure TensorBridge at the five batch sizes (a few minutes per model):
+`NAME` is the panel (`llama3_8b`, `qwen3_8b`, `qwen3_14b` or `llama33_70b`). `METHOD` is the
+line. FP8 and BF16 load the base model, which vLLM quantizes to FP8 at load time for the FP8 line.
+`BASE` is the model folder from [`eval/README.md`](../../eval/README.md#models).
 
 ```bash
-MODEL=models/qwen3_8b/NVFP4A8 bash ae/figure12/measure.sh
+export MODEL_ROOT=/path/to/models
+export NAME=qwen3_8b BASE=$MODEL_ROOT/Qwen/Qwen3-8B
+METHOD=tensorbridge MODEL=models/$NAME/NVFP4A8  bash ae/figure12/measure.sh
+METHOD=nvfp4a16     MODEL=models/$NAME/NVFP4A16 bash ae/figure12/measure.sh
+METHOD=w4a8         MODEL=models/$NAME/W4A8     bash ae/figure12/measure.sh
+METHOD=fp8          MODEL=$BASE                 bash ae/figure12/measure.sh
+METHOD=bf16         MODEL=$BASE                 bash ae/figure12/measure.sh
 ```
 
-This writes one JSON file per batch size to `ae/figure12/results/`, for example
-`tensorbridge-256.json`, and prints the output throughput of each. For
-Llama-3.3-70B, add `--tensor-parallel-size 2`.
+For Llama-3.3-70B, add `TP=2` to use two GPUs. Outputs:
 
-The baselines run through the same script with vLLM's own kernels. They need
-two more checkpoints. NVFP4A16 Marlin uses the NVFP4A8 weights without activation
-quantization (the script only writes a new config and symlinks the weights).
-W4A8 CUTLASS uses INT4 weights with FP8 activations (`--scheme W4A8`, 10-20
-minutes):
+- `ae/figure12/results/<NAME>/<METHOD>/batch-<B>.json`: one file per batch size;
+- `ae/figure12/results/measurements.csv` and `ae/figure12/results/figure12.png` and `.pdf`:
+  every model and method measured so far. A panel without data shows "not measured".
 
-```bash
-python3 ae/figure12/nvfp4a16.py models/qwen3_8b/NVFP4A8 models/qwen3_8b/NVFP4A16
-.venv-quantize/bin/python eval/quantize.py --model /path/to/Qwen3-8B \
-  --scheme W4A8 --output models/qwen3_8b/W4A8
-```
+## Expected results
 
-Give each baseline its own output folder:
+From Section 5.4.1 and `ae/figure12/data/measurements.csv`:
 
-```bash
-# NVFP4A16 Marlin
-MODEL=models/qwen3_8b/NVFP4A16 QUANTIZATION=auto bash ae/figure12/measure.sh \
-  --output-dir ae/figure12/results/marlin
-# W4A8 CUTLASS
-MODEL=models/qwen3_8b/W4A8 QUANTIZATION=auto bash ae/figure12/measure.sh \
-  --output-dir ae/figure12/results/w4a8
-# FP8: the original model, quantized by vLLM when it loads
-MODEL=/path/to/Qwen3-8B QUANTIZATION=fp8 bash ae/figure12/measure.sh \
-  --output-dir ae/figure12/results/fp8
-# BF16: the original model
-MODEL=/path/to/Qwen3-8B QUANTIZATION=auto bash ae/figure12/measure.sh \
-  --output-dir ae/figure12/results/bf16
-```
+- Geometric-mean throughput of TensorBridge across the four models and five batch sizes:
+  1.64x BF16, 1.09x FP8, 1.13x W4A8 and 1.35x NVFP4A16 Marlin.
+- Per model, the geometric-mean gain over BF16 rises from 1.40x on Llama-3-8B to 2.33x on Llama-3.3-70B.
+- Peak TensorBridge throughput: 10.3k, 9.7k, 6.7k and 3.2k output tokens/s on Llama-3-8B,
+  Qwen3-8B, Qwen3-14B and Llama-3.3-70B.
 
-Our peak throughputs for TensorBridge are about 10.3k, 9.7k, 6.7k and 3.2k
-tokens/s for Llama-3-8B, Qwen3-8B, Qwen3-14B and Llama-3.3-70B. Your numbers
-depend on the GPU clock and driver, so compare the ratios between methods
-rather than the absolute values.
+Compare your measurement through `ae/figure12/results/measurements.csv`.

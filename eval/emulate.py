@@ -12,14 +12,11 @@ from compressed_tensors.compressors.nvfp4.base import NVFP4PackedCompressor
 from compressed_tensors.compressors.nvfp4.helpers import unpack_fp4_from_uint8
 from compressed_tensors.quantization.lifecycle.forward import dequantize
 
-from tensorbridge.quant.nvfp4 import E2M1_MAX, PREFOLD_DELTA, RAW_SCALE_MIN, lsq_alpha
+from tensorbridge.quant.nvfp4 import E2M1_MAX, PREFOLD_DELTA, RAW_SCALE_MIN
 
 
-def fpma_weight(packed, scale, global_scale, snc=True, alpha=1.0):
-    """`[N, K/2]` packed E2M1, `[N, K/16]` E4M3 scales -> `[N, K]` BF16 bridge weights.
-    `alpha` is a number or "lsq", as in the kernel's vLLM plugin."""
-    if isinstance(alpha, str):  # "lsq"
-        alpha = lsq_alpha(packed, scale)
+def fpma_weight(packed, scale, global_scale, snc=True):
+    """`[N, K/2]` packed E2M1, `[N, K/16]` E4M3 scales -> `[N, K]` BF16 bridge weights."""
     n, groups = scale.shape
     raw = scale.view(torch.uint8).to(torch.int16).view(n, groups, 1)
     codes = torch.stack((packed & 0xF, packed >> 4), dim=-1).view(n, groups, 16).to(torch.int16)
@@ -32,18 +29,18 @@ def fpma_weight(packed, scale, global_scale, snc=True, alpha=1.0):
     byte = torch.where(nonzero & (raw >= RAW_SCALE_MIN), byte, 0).to(torch.uint8)
     value = byte.view(torch.float8_e4m3fn).float()
     # compressed-tensors stores the reciprocal of the global scale.
-    value = value * ((E2M1_MAX * alpha) / global_scale.float())
+    value = value * (E2M1_MAX / global_scale.float())
     return value.view(n, groups * 16).to(torch.bfloat16)
 
 
-def fpma(snc=True, alpha=1.0):
+def fpma(snc=True):
     @classmethod
     @torch.no_grad()
     def decompress(cls, state_dict, scheme):
         state_dict = state_dict.copy()
         scale = state_dict["weight_scale"]
         state_dict["weight"] = fpma_weight(
-            state_dict.pop("weight_packed"), scale, state_dict["weight_global_scale"], snc, alpha
+            state_dict.pop("weight_packed"), scale, state_dict["weight_global_scale"], snc
         )
         state_dict["weight_scale"] = torch.nn.Parameter(scale.to(torch.bfloat16), requires_grad=False)
         return state_dict

@@ -48,7 +48,7 @@ def _fp4(packed):
     return torch.where(codes & 8 != 0, -values, values)
 
 
-def _dequantize(t, fmt, method, alpha):
+def _dequantize(t, fmt, method):
     """Stacked expert projections `[E, out, ...]` -> BF16 `[E, out, in]`."""
     if fmt == "pack-quantized":  # W4A8: int4 packed 8 per int32, BF16 scale per 128
         s = t["weight_scale"].float()
@@ -61,19 +61,13 @@ def _dequantize(t, fmt, method, alpha):
     gscale = t["weight_global_scale"].float().view(-1, 1, 1)  # compressed-tensors: reciprocal
     if method in ("ours", "ours_nosnc"):
         experts, rows = packed.shape[:2]
-        if alpha == "lsq":  # one least-squares factor per expert, as per layer for dense
-            alpha = torch.tensor([emulate.lsq_alpha(p, s) for p, s in zip(packed, scale)],
-                                 device=packed.device).view(-1, 1, 1)
-        if torch.is_tensor(alpha):
-            alpha = alpha.repeat_interleave(rows, dim=0)
         w = emulate.fpma_weight(packed.flatten(0, 1), scale.flatten(0, 1),
-                                gscale.repeat_interleave(rows, dim=0), snc=method == "ours",
-                                alpha=alpha)
+                                gscale.repeat_interleave(rows, dim=0), snc=method == "ours")
         return w.view(experts, rows, -1)
     return (_fp4(packed) * (scale.float().repeat_interleave(16, dim=-1) / gscale)).bfloat16()
 
 
-def load(model, path, method, alpha, group, chunk=64):
+def load(model, path, method, group, chunk=64):
     """Fill every fused expert module of `model` from the checkpoint at `path`;
     `group` is its compressed-tensors scheme (`format`, `input_activations`).
     Experts are read stacked and dequantized `chunk` at a time."""
@@ -98,9 +92,9 @@ def load(model, path, method, alpha, group, chunk=64):
                                      for k in keys[start:start + chunk]]).to(device)
                      for f, keys in saved[(layer, p)].items()}
                  for p in ("gate_proj", "up_proj", "down_proj")}
-            out["gate_up"].append(torch.cat([_dequantize(t[p], group["format"], method, alpha)
+            out["gate_up"].append(torch.cat([_dequantize(t[p], group["format"], method)
                                              for p in ("gate_proj", "up_proj")], dim=1))
-            out["down"].append(_dequantize(t["down_proj"], group["format"], method, alpha))
+            out["down"].append(_dequantize(t["down_proj"], group["format"], method))
         for key, param, proj in (("gate_up", experts.gate_up_proj, "gate_proj"),
                                  ("down", experts.down_proj, "down_proj")):
             # Replace rather than copy: for int formats transformers stacked the raw int8 values.

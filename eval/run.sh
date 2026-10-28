@@ -35,6 +35,6 @@ for method in "${methods[@]}"; do
     if [[ -z ${LIMIT:-} ]] && grep -qs '"limit": null' "$out"; then echo "Keep $out"; continue; fi
     "${AE_PYTHON:-python}" eval/accuracy.py --method "$method" --metric "$metric" \
       --model "$checkpoint" --tokenizer "$base" --output "$out" \
-      ${LIMIT:+--limit "$LIMIT"} ${ALPHA:+--alpha "$ALPHA"}
+      ${LIMIT:+--limit "$LIMIT"}
   done
 done
