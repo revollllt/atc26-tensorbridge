@@ -80,7 +80,7 @@ BM = 128、4 级、data parallel、N = K = 8192 的稳态循环体（4 个 K blo
 | A3 | 双 MMA 预交织权重布局，一次 16 B LDS 供两个 k32 call | ✅ | `memory/s2r.cuh` `load_weights_pair`；`to_thread_order` | 全部 | 论文 Sec. 4.5；LiquidGEMM Dual-MMA |
 | A4 | 掩码两种实现（算术 / PRMT LUT）与 scale 预广播 | ✅ | `kPrebroadcastScale` 开关，由启发式选择 | BM = 256 大 K | — |
 | A5 | weight scale 按线程序离线重排 | ⊘ | AE 中每个 K block 16 次 `LDS.U8`，而权重只要 2 次 `LDS.128`；每线程每个 K block 恰好用到 16 个 scale 字节，可降到 1 次 `LDS.128`。fork 的离线 pair-pack（O1 到 O5）去掉了全部 scale 窄读，ABBA 反而慢 1.1% 和 1.5%，结论是 scale S2R 不在 prefill 的关键路径上。仅当 H20 decode 被证实受限于发射时重测 | H20 decode | humming 上游：1 次 32 位 LDS 取齐一个线程的 4 个 scale（`loader_bs.cuh` `load_layout1`） |
-| A6 | bridge 指令数压缩 | ⊘ | `dequant_word` 约 17 条 / 8 个权重，零标记掩码约占 8 条。fork 试过的路线都失败：运行时建 LUT −33%，常量表 −10%，临时表 −12.3%，LUT 方案指令数反而从 21 增到 28；砍掉 32 条 ALU 的 SNC 变体收益为 0 µs。humming 上游的 per-scale 寄存器 LUT（2 条 `IMAD` 建表，零值项不加 scale，因而无需掩码）适用于 MXFP4 group 32；NVFP4 group 16 下一个 k32 call 内每个 scale 只覆盖本线程 4 个权重，建表开销摊薄一半，这与 fork 的负结果一致。同 A5，只在 H20 decode 上有条件地重开 | H20 decode | humming `datatype/dequant_fused.cuh` |
+| A6 | bridge 指令数压缩：LUT bridge | ☐ | 已重开（spec 002）。DeepGEMM 集成中的 LUT bridge 把零值折进每个 scale 用 2 条 `IMAD` 建的寄存器表，并离线完成 nibble 分组：SASS 每个 k32 call 30 条指令，现有 bridge 40 条（预广播 35.25 条）；每字一次掩码加裸 `prmt` 可降到 28 条。DeepGEMM 集成 Round 16 消融中比 add+mask 快 1.027 到 1.087 倍，kernel 总指令 1176 → 1040。fork 中失败的 LUT 路线（运行时建表 −33%、常量表 −10%、临时表 −12.3%、LUT oracle 指令 21 → 28）建表更贵或表在内存中，与此不同 | 全部，H20 decode 尤甚 | `integrations/deepgemm/deep_gemm/include/deep_gemm/common/fpma.cuh`；`Tensorbridge-DeepGEMM/sbatch/ablation/README.md` Round 16 |
 | A7 | 可选 ULP 精确模式的开销 | ◐ | `tb-ulp-work` 原型在 scale 字节 0x23 到 0x7E 内逐比特等于 RNE E4M3，但 40 个 Figure 11 shape 几何平均慢约 18% | 需要精确数值的部署 | — |
 | A8 | MXFP4（E2M1 + UE8M0，group 32）输入 | ☐ | 只支持 NVFP4（E4M3 scale，group 16）。UE8M0 是纯指数，加到 FP8 指数域上是精确的，不存在 FPMA 的尾数误差；代价是 E4M3 只容纳约 11 个 binade，过小 group 的值需离线重新取整 | 兼容 MXFP4 checkpoint（如 gpt-oss） | humming 上游：scale 钳到 11 个 binade，过小的 group 离线重新取整（`process_mxfp4.cuh`），2^6 的偏置差放到 epilogue |
 
@@ -131,7 +131,7 @@ BM = 128、4 级、data parallel、N = K = 8192 的稳态循环体（4 个 K blo
 | ID | 优化项 | 状态 | 现状与证据 | 主要收益场景 | 参考 |
 | --- | --- | --- | --- | --- | --- |
 | E1 | persistent kernel（grid = SM 数），data parallel + Stream-K 尾波 | ✅ | `scheduler/gemm.cuh` | 全部 | 论文 Sec. 4.6 |
-| E2 | 基于代价模型的统一配置选择 | ◐ | `unified-scheduler` worktree，未提交：对全部合法配置用延迟模型打分并取最小；1105 个 shape 上几何平均比旧启发式快 7.0%（held-out 695 个快 9.7%），论文 Figure 11 脚本上持平（0.9985）；已删除 `sm90_tuned.hpp`。待决定是否合入，以及论文 Sec. 4.6 的描述是否同步 | 全部 | DeepGEMM、FlashInfer 启发式 |
+| E2 | 基于代价模型的统一配置选择 | ◐ | `unified-scheduler` worktree，未提交：对全部合法配置用延迟模型打分并取最小；1105 个 shape 上几何平均比旧启发式快 7.0%（held-out 695 个快 9.7%），论文 Figure 11 脚本上持平（0.9985）；已删除 `sm90_tuned.hpp`。在线开销：冷求值 187 到 191 µs（132 SM），每个 `(N, K)` 预计算 M = 1..8192 约 1.5 s，只有 50 到 71 个 M 区间；热查找约 0.1 µs。后续见 spec 003 | 全部 | DeepGEMM、FlashInfer 启发式 |
 | E3 | 代价模型按设备参数化，并扩展候选维度 | ☐ | 常数 `kH100` 写死。应按设备选择常数，SM 数、L2、smem 取自设备属性，其余常数用 `tools/sm90_cost_model`（sweep + fit）对每种 GPU 拟合一次。候选集需随 B7、B8、B9 扩展，并允许参与的 SM 数小于总数 | H20 调优的主路径 | humming 上游可缩小参与的 SM 数 |
 | E4 | 移除按 shape 的规则与表 | ✗ | `main` 上仍有 `sm90_tuned.hpp`、`sm90.hpp` 中的经验阈值，以及 26 个精确 shape 的 `tuned/NVIDIA_H100_80GB_HBM3.json`（`runtime.select_config` 优先读取）。`autotune.py` 只保留为拟合代价模型用的测量工具 | 可维护性 | — |
 
