@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.egg-info/
+.venv*/
+.cache/
+.tensorbridge/
+build/
+dist/
+/benchmarks/runs/
+benchmarks/results/

@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tensorbridge"
+version = "0.1.0"
+description = "TensorBridge: NVFP4-weight x FP8-activation GEMMs on Hopper FP8 tensor cores"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "The TensorBridge Authors" }]
+requires-python = ">=3.12,<3.13"
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.12",
+    "Environment :: GPU :: NVIDIA CUDA",
+]
+# Tested with torch 2.13.0 (its triton), Python 3.12, CUDA 12.8 and 13.
+dependencies = [
+    "torch",
+    "triton",
+    "filelock",
+    "pyelftools",
+]
+
+[project.optional-dependencies]
+# NVRTC, the CUDA headers and cuda-python from wheels, matching torch's CUDA major version.
+cu12 = [
+    "nvidia-cuda-runtime-cu12",
+    "nvidia-cuda-cccl-cu12",
+    "nvidia-cuda-nvcc-cu12",
+    "nvidia-cuda-nvrtc-cu12",
+    "cuda-python>=12,<13",
+]
+cu13 = [
+    "nvidia-cuda-runtime",
+    "nvidia-cuda-cccl",
+    "nvidia-cuda-nvcc",
+    "nvidia-cuda-nvrtc",
+    "cuda-python>=13,<14",
+]
+# The vLLM plugin (`tensorbridge.vllm_plugin`), tested with vLLM 0.32.0.
+vllm = ["vllm==0.32.0"]
+# `tensorbridge.experimental`: vLLM's `[1, 128]` activation quantizer.
+experimental = ["vllm==0.32.0"]
+# benchmarks/: humming, and vLLM for DeepGEMM and Marlin.
+bench = [
+    "vllm==0.32.0",
+    "humming-kernels==0.1.17",
+]
+dev = ["ruff", "ninja"]
+
+[project.entry-points."vllm.general_plugins"]
+tensorbridge = "tensorbridge.vllm_plugin:register"
+
+[tool.setuptools.packages.find]
+include = ["tensorbridge*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+# The kernel and launcher sources the JIT compiles at run time, and the vendored CUTLASS headers.
+tensorbridge = ["include/**/*", "csrc/**/*", "third_party/**/*"]
+
+[tool.ruff]
+line-length = 120
+extend-exclude = ["tensorbridge/third_party"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+# B023: closures that a loop iteration defines and uses before the next one; B905: zips of equal-length
+# sequences; B008: defaults evaluated once on purpose.
+ignore = ["B023", "B905", "B008"]
+
+[tool.mypy]
+disable_error_code = ["no-untyped-call", "no-untyped-def", "type-arg", "untyped-decorator", "no-any-return"]
+ignore_missing_imports = true
+
+[tool.uv]
+# One CUDA major version per environment.
+conflicts = [[{ extra = "cu12" }, { extra = "cu13" }]]

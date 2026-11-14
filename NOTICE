@@ -1,0 +1,11 @@
+TensorBridge
+Copyright 2026 The TensorBridge Authors
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product includes software developed by NVIDIA Corporation:
+
+  CUTLASS and CuTe (https://github.com/NVIDIA/cutlass), version 4.8.1, vendored unmodified under
+  tensorbridge/third_party/cutlass. Copyright (c) 2017 - 2026 NVIDIA CORPORATION & AFFILIATES.
+  All rights reserved. Licensed under the BSD 3-Clause License; see
+  tensorbridge/third_party/cutlass/LICENSE.txt.
