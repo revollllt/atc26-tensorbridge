@@ -13,7 +13,7 @@ namespace tensorbridge::sm90 {
 // Token tiles of 8 to 256 in steps of 8.
 constexpr int64_t kBlockMStep = 8, kMaxBlockM = 256;
 // The token tiles of the group-scale kernel (`static_assert` of `impls/sm90_w4a8_pgroup.cuh`).
-constexpr int64_t kMinGroupScaleBlockM = 16, kMaxGroupScaleBlockM = 192;
+constexpr int64_t kMinGroupScaleBlockM = 8, kMaxGroupScaleBlockM = 192;
 
 // `sizeof(layout::PtokenStorage<...>)` of `layout/sm90.cuh`: the ring, then the output tile (in 128-row chunks
 // for 128- and 256-token tiles) and two per-token scale buffers beside it, the barriers, and a grouped
@@ -100,12 +100,12 @@ inline uint32_t clean_block_ms(int64_t ctas_per_sm, int64_t block_n, int64_t blo
                     {{{{0x0000000f, 0x00000000}, {0x00000000, 0x00000000}}, {{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}}, {{{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}, {{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}}},
             },
             {
-                    {{{{0x007ffffe, 0x001ffffe}, {0x00000000, 0x00000000}}, {{0x000001fe, 0x000001fe}, {0x00000000, 0x00000000}}}, {{{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}, {{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}}},
-                    {{{{0x0003fffe, 0x001ffffe}, {0x00000000, 0x00000000}}, {{0x0000013e, 0x000001fe}, {0x00000000, 0x00000000}}}, {{{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}, {{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}}},
-                    {{{{0x007ffffe, 0x001ffffe}, {0x00000000, 0x00000000}}, {{0x000001fe, 0x000001fe}, {0x00000000, 0x00000000}}}, {{{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}, {{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}}},
-                    {{{{0x001ffffe, 0x001ffffe}, {0x00000000, 0x00000000}}, {{0x000000fe, 0x000001fe}, {0x00000000, 0x00000000}}}, {{{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}, {{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}}},
-                    {{{{0x0001fffe, 0x0001fffe}, {0x00000000, 0x00000000}}, {{0x000000fe, 0x000000fe}, {0x00000000, 0x00000000}}}, {{{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}, {{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}}},
-                    {{{{0x00007ffe, 0x00007ffe}, {0x00000000, 0x00000000}}, {{0x0000003e, 0x0000003e}, {0x00000000, 0x00000000}}}, {{{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}, {{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}}},
+                    {{{{0x0007ffff, 0x003fffff}, {0x00000000, 0x00000000}}, {{0x0000007f, 0x000001ff}, {0x00000000, 0x00000000}}}, {{{0x0000003f, 0x0000003f}, {0x00000000, 0x00000000}}, {{0x00000003, 0x00000001}, {0x00000000, 0x00000000}}}},
+                    {{{{0x0003ffff, 0x003fffff}, {0x00000000, 0x00000000}}, {{0x0000003f, 0x000001ff}, {0x00000000, 0x00000000}}}, {{{0x0000000f, 0x0000003f}, {0x00000000, 0x00000000}}, {{0x00000001, 0x00000001}, {0x00000000, 0x00000000}}}},
+                    {{{{0x0003ffff, 0x003fffff}, {0x00000000, 0x00000000}}, {{0x0000003f, 0x000001ff}, {0x00000000, 0x00000000}}}, {{{0x0000000f, 0x0000003f}, {0x00000000, 0x00000000}}, {{0x00000001, 0x00000001}, {0x00000000, 0x00000000}}}},
+                    {{{{0x0007ffff, 0x001fffff}, {0x00000000, 0x00000000}}, {{0x0000003f, 0x000001ff}, {0x00000000, 0x00000000}}}, {{{0x0000001f, 0x0000003f}, {0x00000000, 0x00000000}}, {{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}}},
+                    {{{{0x0001ffff, 0x0001ffff}, {0x00000000, 0x00000000}}, {{0x0000003f, 0x000000ff}, {0x00000000, 0x00000000}}}, {{{0x00000007, 0x0000001f}, {0x00000000, 0x00000000}}, {{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}}},
+                    {{{{0x00003fff, 0x00007fff}, {0x00000000, 0x00000000}}, {{0x0000003f, 0x0000003f}, {0x00000000, 0x00000000}}}, {{{0x00000007, 0x00000007}, {0x00000000, 0x00000000}}, {{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}}},
                     {{{{0x00000ffe, 0x00000ffe}, {0x00000000, 0x00000000}}, {{0x0000000e, 0x0000000e}, {0x00000000, 0x00000000}}}, {{{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}, {{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}}},
                     {{{{0x000007fe, 0x000007fe}, {0x00000000, 0x00000000}}, {{0x00000006, 0x00000006}, {0x00000000, 0x00000000}}}, {{{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}, {{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}}},
                     {{{{0x000001fe, 0x000001fe}, {0x00000000, 0x00000000}}, {{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}}, {{{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}, {{0x00000000, 0x00000000}, {0x00000000, 0x00000000}}}},
@@ -152,6 +152,19 @@ inline uint32_t clean_one_warpgroup_block_ms(int64_t block_k, int64_t num_stages
     return kMasks[block_k / 256][num_stages - 3];
 }
 
+// The clean token tiles of one-math-warp-group group-scale kernels (`sm90_w4a8_pgroup.cuh`, `math_warpgroups` 1),
+// populated by `benchmarks/census_pgroup.py`: contiguous and masked, BN 128, BK 128, no Stream-K;
+// by (ctas_per_sm - 2; num_stages - 3) for 2 to 4 CTAs/SM and 3 to 6 ring slots, bit i for BM 8 (i + 1).
+inline uint32_t clean_pgroup_one_warpgroup_block_ms(int64_t ctas_per_sm, int64_t block_n, int64_t num_stages) {
+    constexpr uint32_t kMasks[3][4] = {
+            {0x0000007f, 0x0000001f, 0x0000001f, 0x0000001f},  // 2 CTAs/SM
+            {0x00000007, 0x00000003, 0x00000003, 0x00000003},  // 3 CTAs/SM
+            {0x00000001, 0x00000000, 0x00000000, 0x00000000},  // 4 CTAs/SM
+    };
+    if (block_n != 128 || ctas_per_sm < 2 || ctas_per_sm > 4 || num_stages < 3 || num_stages > 6) return 0;
+    return kMasks[ctas_per_sm - 2][num_stages - 3];
+}
+
 // Why `config` cannot run `desc`, or null if it can: the kernel template must take the config, the block must
 // divide the weight, one CTA's shared memory must fit a block's opt-in limit and `ctas_per_sm` of them an SM (each
 // reserves 1 KB besides, as `jit/runtime.py` checks), and the token tile must be clean; the census itself asks
@@ -161,49 +174,53 @@ inline const char *illegal_reason(const GemmConfig &config, const GemmDesc &desc
     // A tile of one K block has nothing to split along K: every slice is a whole tile, so a Stream-K tail
     // only adds the zeroing and the locks to the data-parallel schedule.
     if (config.use_stream_k && desc.k < 2 * config.block_k) return "Stream-K needs at least two K blocks per tile";
-    // The template of `impls/sm90_w4a8_pgroup.cuh`.
+    // The template constraints of `impls/sm90_w4a8_ptoken.cuh` and `impls/sm90_w4a8_pgroup.cuh`.
     if (config.math_warpgroups != 1 && config.math_warpgroups != 2) return "one or two math warp groups";
-    if (desc.group_scales && config.math_warpgroups != 2) return "the group-scale kernel has two math warp groups";
-    if (config.ctas_per_sm > (config.math_warpgroups == 2 ? 2 : 4))
+    if (config.ctas_per_sm < 1 || config.ctas_per_sm > (config.math_warpgroups == 2 ? 2 : 4))
       return "one or two CTAs per SM with two math warp groups, one to four with one";
     if (config.math_warpgroups == 1 && config.ctas_per_sm < 2) return "one math warp group takes two CTAs per SM or more";
     if (desc.group_scales && config.use_stream_k && config.stream_k_aligned) return "the group-scale kernel cuts the tail as Stream-K";
-    if (desc.group_scales && (config.block_k != 128 || config.ctas_per_sm != 1))
-      return "the group-scale kernel takes block_k 128 at one CTA per SM";
+    if (desc.group_scales && config.block_k != 128)
+      return "the group-scale kernel takes block_k 128";
     if (desc.group_scales && (config.block_m < kMinGroupScaleBlockM || config.block_m > kMaxGroupScaleBlockM))
-      return "the group-scale kernel takes token tiles of 16 to 192";
+      return "the group-scale kernel takes token tiles of 8 to 192";
     // The producer warp group's registers, as the kernel derives them from the layout (`kNumProducerRegs`).
     const int64_t producer_regs = desc.layout == GroupedLayout::Indexed ? 64 : 40;
-    if (desc.num_experts) {
+    if (desc.num_experts || desc.group_scales) {
         const int64_t math_threads = 128 * config.math_warpgroups, threads = math_threads + 128;
         const int64_t launch_regs = 65536 / (threads * config.ctas_per_sm) / 8 * 8;
         const int64_t consumer_regs = (launch_regs * threads - producer_regs * 128) / math_threads / 8 * 8;
-        // All accumulators and four FP8 source registers must coexist at WGMMA issue.
-        if (config.block_m * config.block_n / math_threads + 4 > consumer_regs)
+        // All accumulators (two sets in pgroup: per-K-block and promoted) and four FP8 source registers must coexist.
+        const int64_t accum_sets = desc.group_scales ? 2 : 1;
+        if (accum_sets * config.block_m * config.block_n / math_threads + 4 > consumer_regs)
           return "accumulators and WGMMA sources exceed the consumer register budget";
     }
     if (desc.k % config.block_k != 0) return "K is not a multiple of block_k";
     if (desc.n % config.block_n != 0) return "N is not a multiple of block_n";
+    if (config.block_m % kBlockMStep != 0 || config.block_m < kBlockMStep || config.block_m > kMaxBlockM)
+      return "invalid token tile";
+    if (config.num_stages < 3 || config.num_stages > kMaxCensusStages) return "ring depth outside 3..16";
     const int64_t smem_bytes = get_smem_bytes(config, desc.num_experts, desc.layout, desc.group_scales);
     if (smem_bytes > desc.smem_bytes) return "one CTA needs more shared memory than a block may have";
     if (config.ctas_per_sm * (smem_bytes + 1024) > desc.smem_bytes + 1024)
       return "ctas_per_sm CTAs need more shared memory than an SM has";
     if (!check_clean) return nullptr;
-    const bool one_warpgroup_census = (desc.layout == GroupedLayout::Contiguous || desc.layout == GroupedLayout::Masked) &&
-                                      config.ctas_per_sm == 3 && config.block_n == 128 &&
-                                      config.block_m <= kMaxOneWarpgroupBlockM;
+    const bool one_warpgroup_census =
+        (desc.layout == GroupedLayout::Contiguous || desc.layout == GroupedLayout::Masked) &&
+        config.block_n == 128 && config.block_m <= kMaxOneWarpgroupBlockM &&
+        (desc.group_scales ? (config.ctas_per_sm >= 2 && config.ctas_per_sm <= 4) : config.ctas_per_sm == 3);
     if (config.math_warpgroups == 1 && !one_warpgroup_census)
-      return "the census covers one math warp group for contiguous and masked kernels at 3 CTAs per SM, BN 128 and BM "
-             "up to 64";
+      return "the census covers one math warp group for contiguous and masked kernels at BN 128 and BM up to 64";
     const bool aligned = config.use_stream_k && config.stream_k_aligned && desc.layout == GroupedLayout::Dense;
-    const uint32_t clean = config.math_warpgroups == 1 ? clean_one_warpgroup_block_ms(config.block_k, config.num_stages)
-                           : aligned ? clean_aligned_block_ms(config.ctas_per_sm, config.block_n, config.block_k,
-                                                              config.num_stages)
-                                     : clean_block_ms(config.ctas_per_sm, config.block_n, config.block_k,
-                                                      config.use_stream_k, desc.layout, config.num_stages,
-                                                      desc.group_scales);
-    if (config.block_m % kBlockMStep != 0 || config.block_m < kBlockMStep || config.block_m > kMaxBlockM ||
-        !(clean >> (config.block_m / kBlockMStep - 1) & 1))
+    const uint32_t clean =
+        config.math_warpgroups == 1
+            ? (desc.group_scales
+                   ? clean_pgroup_one_warpgroup_block_ms(config.ctas_per_sm, config.block_n, config.num_stages)
+                   : clean_one_warpgroup_block_ms(config.block_k, config.num_stages))
+            : aligned ? clean_aligned_block_ms(config.ctas_per_sm, config.block_n, config.block_k, config.num_stages)
+                      : clean_block_ms(config.ctas_per_sm, config.block_n, config.block_k, config.use_stream_k,
+                                       desc.layout, config.num_stages, desc.group_scales);
+    if (!(clean >> (config.block_m / kBlockMStep - 1) & 1))
       return "the token tile spills, serializes its WGMMAs or does not compile with this block shape and CTAs per SM";
     // A 3-slot ring is the fallback where 4 slots do not fit beside the output tile or spill.
     if (config.num_stages == 3) {

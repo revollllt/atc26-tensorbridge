@@ -557,7 +557,8 @@ def moe_buffer_specs(
 def moe_forward_indexed(
     moe: NVFP4MoE, hidden_states: torch.Tensor, routing13: IndexedRouting, routing2: IndexedRouting,
     buffers: MoEBuffers, input_scale: torch.Tensor | None = None,
-    *, activation_fn: ActivationFn | None = None, activated_buffer: torch.Tensor | None = None,
+    *, local_rows_hint: int | None = None, activation_fn: ActivationFn | None = None,
+    activated_buffer: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Quantize -> gate/up GEMM -> activation and quantize -> down GEMM.
     Returns `[T * top_k, H]` in route order; the caller aligns routes and combines top-k outputs.
@@ -566,8 +567,9 @@ def moe_forward_indexed(
         raise ValueError("indexed MoE needs gate/up top_k routes and down top_k=1 routes")
     if not moe.is_gated and activation_fn is None:
         raise ValueError("non-gated MoE requires an explicit activation_fn")
-    rows = hidden_states.size(0) * moe.top_k
-    record_grouped_capture(moe, rows)
+    global_num_routes = hidden_states.size(0) * moe.top_k
+    local_rows = moe_rows(moe, global_num_routes) if local_rows_hint is None else local_rows_hint
+    record_grouped_capture(moe, local_rows)
     if input_scale is not None:
         inputs, scales = hidden_states, input_scale
     elif moe.gate_up_quant == "group_128":
@@ -576,7 +578,7 @@ def moe_forward_indexed(
     else:
         inputs, scales = fp8.quantize(hidden_states, out=(buffers["input"], buffers["input_scale"]))
     fp8_nvfp4_grouped_gemm(
-        inputs, scales, moe.w13, routing13, rows,
+        inputs, scales, moe.w13, routing13, local_rows,
         out=buffers["gate_up"], config=None if moe.configs is None else moe.configs[0], enable_pdl=input_scale is None,
         group_scales=moe.gate_up_quant == "group_128",
     )
@@ -594,7 +596,7 @@ def moe_forward_indexed(
         fp8.silu_mul_quantize(buffers["gate_up"],
                               out=(buffers["intermediate"], buffers["intermediate_scale"]))
     return fp8_nvfp4_grouped_gemm(
-        buffers["intermediate"], buffers["intermediate_scale"], moe.w2, routing2, rows,
+        buffers["intermediate"], buffers["intermediate_scale"], moe.w2, routing2, local_rows,
         out=buffers["output"], config=None if moe.configs is None else moe.configs[1], enable_pdl=True,
         group_scales=moe.down_quant == "group_128",
     )

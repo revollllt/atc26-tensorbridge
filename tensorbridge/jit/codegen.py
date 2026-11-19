@@ -94,15 +94,26 @@ def generate_pgroup(
     num_experts: int = 0, layout: GroupedLayout = "dense",
 ) -> KernelSource:
     """The `[1, 128]` activation-scale kernel (`impls/sm90_w4a8_pgroup.cuh`) for one weight shape `(n, k)` and
-    config, padded as `generate` pads it: dense or grouped, one 128-deep K block per stage, one CTA per SM.
+    config, padded as `generate` pads it: dense or grouped, one 128-deep K block per stage.
     `scale_m_major` describes dense activation scales; grouped kernels receive their actual strides."""
-    if config.block_k != 128 or config.ctas_per_sm != 1 or config.stream_k_aligned or config.math_warpgroups != 2:
-        raise ValueError(f"the group-scale kernel takes block_k 128 at one CTA per SM, plain Stream-K and two math "
-                         f"warp groups, not {config}")
+    max_ctas = 2 if config.math_warpgroups == 2 else 4
+    if (
+        config.block_k != 128
+        or config.stream_k_aligned
+        or config.math_warpgroups not in (1, 2)
+        or config.ctas_per_sm < 1
+        or config.ctas_per_sm > max_ctas
+        or (config.math_warpgroups == 1 and config.ctas_per_sm < 2)
+    ):
+        raise ValueError(
+            f"the group-scale kernel takes block_k 128, plain Stream-K, and valid (math_warpgroups, ctas_per_sm), "
+            f"not {config}"
+        )
     name = (
         f"tensorbridge::sm90_w4a8_pgroup<{pad_to_unit(n)}, {pad_to_unit(k)}, {n}, {config.block_m}, {config.block_n}, "
-        f"{config.num_stages}, {cpp(config.use_stream_k)}, {cpp(config.m_fast_tile_order)}, {cpp(scale_m_major)}, "
-        f"{cpp(bridge == 'exact')}, tensorbridge::GroupedLayout::{LAYOUT_NAMES[layout]}, {num_experts}>"
+        f"{config.num_stages}, {config.ctas_per_sm}, {config.math_warpgroups}, {cpp(config.use_stream_k)}, "
+        f"{cpp(config.m_fast_tile_order)}, {cpp(scale_m_major)}, {cpp(bridge == 'exact')}, "
+        f"tensorbridge::GroupedLayout::{LAYOUT_NAMES[layout]}, {num_experts}>"
     )
     source = f"""\
 #include <tensorbridge/impls/sm90_w4a8_pgroup.cuh>

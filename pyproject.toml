@@ -59,7 +59,7 @@ namespaces = false
 
 [tool.setuptools.package-data]
 # The kernel and launcher sources the JIT compiles at run time, and the vendored CUTLASS headers.
-tensorbridge = ["include/**/*", "csrc/**/*", "third_party/**/*"]
+tensorbridge = ["include/**/*", "csrc/**/*", "third_party/**/*", "profiles/*.json"]
 
 [tool.ruff]
 line-length = 120

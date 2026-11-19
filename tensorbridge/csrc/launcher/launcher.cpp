@@ -152,6 +152,19 @@ std::vector<int64_t> autotune_candidates(int64_t m, int64_t n, int64_t k, int64_
     return flat;
 }
 
+// Full legal config enumeration (`sm90_rule.hpp`), flattened, `GemmConfig::to_vector()` each.
+std::vector<int64_t> all_legal_configs(int64_t m, int64_t n, int64_t k, int64_t num_sms, bool check_clean,
+                                       int64_t num_experts, int64_t layout, bool group_scales) {
+    const auto [desc, device_class] = get_problem(m, n, k, num_sms, num_experts, layout, group_scales);
+    (void)device_class;
+    std::vector<int64_t> flat;
+    for (const GemmConfig &config : tensorbridge::sm90::all_legal_configs(desc, check_clean)) {
+        const std::vector<int64_t> values = config.to_vector();
+        flat.insert(flat.end(), values.begin(), values.end());
+    }
+    return flat;
+}
+
 // Why `config` cannot run a weight of `(n, k)` on a device with `smem_bytes` of
 // opt-in shared memory per block, or "" if it can;
 // without `check_clean`, only the resources count, as the census asks.
@@ -169,6 +182,10 @@ int64_t clean_aligned_block_ms(int64_t ctas_per_sm, int64_t block_n, int64_t blo
 
 int64_t clean_one_warpgroup_block_ms(int64_t block_k, int64_t num_stages) {
     return tensorbridge::sm90::clean_one_warpgroup_block_ms(block_k, num_stages);
+}
+
+int64_t clean_pgroup_one_warpgroup_block_ms(int64_t ctas_per_sm, int64_t block_n, int64_t num_stages) {
+    return tensorbridge::sm90::clean_pgroup_one_warpgroup_block_ms(ctas_per_sm, block_n, num_stages);
 }
 
 int64_t clean_block_ms(int64_t ctas_per_sm, int64_t block_n, int64_t block_k, bool use_stream_k, int64_t layout,
@@ -412,12 +429,15 @@ TORCH_LIBRARY(tensorbridge, m) {
     m.def("get_num_sms(int device) -> int");
     m.def("autotune_candidates(int m, int n, int k, int num_sms, int count, int num_experts=0, int layout=0, "
           "bool group_scales=False) -> int[]");
+    m.def("all_legal_configs(int m, int n, int k, int num_sms, bool check_clean=True, int num_experts=0, int layout=0, "
+          "bool group_scales=False) -> int[]");
     m.def("illegal_reason(int n, int k, int smem_bytes, int[] config, bool check_clean=True, int num_experts=0, "
           "int layout=0, bool group_scales=False) -> str");
     m.def("clean_block_ms(int ctas_per_sm, int block_n, int block_k, bool use_stream_k, int layout=0, "
           "int num_stages=0, bool group_scales=False) -> int");
     m.def("clean_aligned_block_ms(int ctas_per_sm, int block_n, int block_k, int num_stages) -> int");
     m.def("clean_one_warpgroup_block_ms(int block_k, int num_stages) -> int");
+    m.def("clean_pgroup_one_warpgroup_block_ms(int ctas_per_sm, int block_n, int num_stages) -> int");
     m.def("config_smem_bytes(int[] config, int num_experts=0, int layout=0, bool group_scales=False) -> int");
     m.def("device_class_for(str device_name, int num_sms) -> str");
     m.def("register_kernel(str cubin_path, str func_name, int shape_n, int shape_k, int[] config, int smem_bytes, "
@@ -439,10 +459,12 @@ TORCH_LIBRARY_IMPL(tensorbridge, Undefined, m) {
     m.impl("select_config", &select_config);
     m.impl("get_num_sms", &get_num_sms);
     m.impl("autotune_candidates", &autotune_candidates);
+    m.impl("all_legal_configs", &all_legal_configs);
     m.impl("illegal_reason", &illegal_reason);
     m.impl("clean_block_ms", &clean_block_ms);
     m.impl("clean_aligned_block_ms", &clean_aligned_block_ms);
     m.impl("clean_one_warpgroup_block_ms", &clean_one_warpgroup_block_ms);
+    m.impl("clean_pgroup_one_warpgroup_block_ms", &clean_pgroup_one_warpgroup_block_ms);
     m.impl("config_smem_bytes", &config_smem_bytes);
     m.impl("device_class_for", &device_class_for);
     m.impl("register_kernel", &register_kernel);

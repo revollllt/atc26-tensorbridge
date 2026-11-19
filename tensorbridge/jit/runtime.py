@@ -12,7 +12,7 @@ import torch
 import torch.utils.cpp_extension
 from filelock import FileLock
 
-from tensorbridge.jit import codegen
+from tensorbridge.jit import codegen, profiles
 from tensorbridge.jit.codegen import Bridge, GemmConfig
 from tensorbridge.jit.cuda_paths import filter_cuda_paths
 
@@ -65,16 +65,22 @@ SelectionKey = tuple[int, int, int, int, int, int, codegen.GroupedLayout, Bridge
 selected_configs: dict[SelectionKey, GemmConfig] = {}
 
 
+@functools.cache
+def _device_name(device: int) -> str:
+    return str(torch.cuda.get_device_name(device))
+
+
 def select_config(
     m: int, n: int, k: int, num_experts: int = 0, layout: codegen.GroupedLayout = "dense", device: int | None = None,
     *, bridge: Bridge = "exact", top_k: int = 1, use_stream_k: bool | None = None, group_scales: bool = False,
 ) -> GemmConfig:
     """The config for this shape on `device` (default: the current device): the one autotune measured for it, else
-    the choice of the selection rule of `csrc/heuristics/sm90_rule.hpp`, computed once per shape and SM count. `n` and
+    a matching model/shape profile (`jit/profiles.py`), else the choice of the selection rule of
+    `csrc/heuristics/sm90_rule.hpp`, computed once per shape and SM count. `n` and
     `k` are the weight's; the rule sees them rounded up to multiples of 128, the shape the kernel runs on
     (`codegen.pad_to_unit`). `m` is the routed row count of a grouped layout. `use_stream_k` forces the Stream-K tail
-    of a dense GEMM off or on, and skips autotune's choice; grouped GEMM never splits K. `group_scales` selects for
-    the `[1, 128]` activation-scale kernel (`impls/sm90_w4a8_pgroup.cuh`)."""
+    of a dense GEMM off or on, and skips autotune's and profile's choices; grouped GEMM never splits K.
+    `group_scales` selects for the `[1, 128]` activation-scale kernel (`impls/sm90_w4a8_pgroup.cuh`)."""
     device = torch.cuda.current_device() if device is None else device
     # The hot path of every call: one native SM-count query and one lookup (`test_repeated_selection_is_a_lookup`).
     key = (device, load_launcher().get_num_sms(device), m, n, k, num_experts, layout, bridge, top_k, use_stream_k,
@@ -82,11 +88,19 @@ def select_config(
     if (config := selected_configs.get(key)) is not None:
         return config
     num_sms = key[1]
+    padded_n, padded_k = codegen.pad_to_unit(n), codegen.pad_to_unit(k)
+    if use_stream_k is None:
+        profile_pick = profiles.lookup(
+            _device_name(device), num_sms, padded_n, padded_k, num_experts, layout, group_scales, bridge, max(m, 1)
+        )
+        if profile_pick is not None:
+            selected_configs[key] = profile_pick
+            return profile_pick
     stream_k_override = 0 if layout != "dense" else -1 if use_stream_k is None else int(use_stream_k)
     with torch.cuda.device(device):  # the op reads the current device's properties
         try:
             selected = torch.ops.tensorbridge.select_config(
-                max(m, 1), codegen.pad_to_unit(n), codegen.pad_to_unit(k), num_sms, stream_k_override, num_experts,
+                max(m, 1), padded_n, padded_k, num_sms, stream_k_override, num_experts,
                 codegen.LAYOUT_IDS[layout], group_scales)
         except RuntimeError as error:
             raise ValueError(f"no config runs (M, N, K) = ({m}, {n}, {k}) with layout {layout}") from error
@@ -102,6 +116,22 @@ def override_config(
     """Serve this shape with `config` from now on (autotune), at the stream's current SM count."""
     key = (device, get_num_sms(device), m, n, k, num_experts, layout, bridge, top_k, None, group_scales)
     selected_configs[key] = config
+
+
+def all_legal_configs(
+    m: int, n: int, k: int, *, check_clean: bool = True, device: int | None = None,
+    num_experts: int = 0, layout: codegen.GroupedLayout = "dense", group_scales: bool = False,
+) -> list[GemmConfig]:
+    """All legal configs (`all_legal_configs` of `csrc/heuristics/sm90_rule.hpp`) for this shape on `device`."""
+    device = torch.cuda.current_device() if device is None else device
+    with torch.cuda.device(device):
+        num_sms = get_num_sms(device)
+        flat = torch.ops.tensorbridge.all_legal_configs(
+            max(m, 1), codegen.pad_to_unit(n), codegen.pad_to_unit(k), num_sms, check_clean, num_experts,
+            codegen.LAYOUT_IDS[layout], group_scales,
+        )
+    width = len(dataclasses.fields(GemmConfig))
+    return [GemmConfig.from_list(flat[i:i + width]) for i in range(0, len(flat), width)]
 
 
 def autotune_candidates(

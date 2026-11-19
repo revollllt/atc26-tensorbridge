@@ -350,8 +350,9 @@ def make_experts(
                 )
                 return
             elif prepared.layout == "indexed":
-                rows = hidden.size(0) * prepared.top_k
-                bm13, bm2 = serving.moe_block_sizes(prepared, rows)
+                global_num_routes = hidden.size(0) * prepared.top_k
+                local_rows_hint = serving.moe_rows(prepared, global_num_routes)
+                bm13, bm2 = serving.moe_block_sizes(prepared, local_rows_hint)
                 sorted13, experts13, padded13 = moe_align_block_size(
                     topk_ids, bm13, global_num_experts, expert_map, ignore_invalid_experts=True,
                 )[:3]
@@ -369,7 +370,7 @@ def make_experts(
                 routed = serving.moe_forward_indexed(
                     prepared, hidden, IndexedRouting(sorted13, experts13, padded13, bm13, prepared.top_k),
                     IndexedRouting(sorted2, experts2, padded2, bm2, 1), moe_buffers, a1q_scale,
-                    activation_fn=act_fn, activated_buffer=activated_buf,
+                    local_rows_hint=local_rows_hint, activation_fn=act_fn, activated_buffer=activated_buf,
                 )
                 moe_fused_mul_sum(routed.view(*topk_ids.shape, -1), topk_weights, outputs=output,
                                   topk_ids=topk_ids, expert_map=expert_map)

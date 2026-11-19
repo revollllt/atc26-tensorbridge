@@ -82,9 +82,11 @@ struct RuleClass {
     int64_t grouped_group_scale_headroom;
 };
 
-// The largest group-scale token tile the census accepts at BN `block_n` with or without Stream-K at some ring depth
-// whose shared memory fits `desc` (BN 128: 184 data parallel, 168 Stream-K; BN 256: 72 and 72, on 227 KB).
-inline int64_t group_scale_census_block_m(const GemmDesc &desc, int64_t block_n, bool stream_k) {
+// The largest and smallest group-scale token tiles the census accepts at BN `block_n` with or without Stream-K at
+// some ring depth whose shared memory fits `desc` (BN 128: 184 data parallel, 168 Stream-K; BN 256: 72 and 72).
+inline std::pair<int64_t, int64_t> group_scale_census_block_m_range(const GemmDesc &desc, int64_t block_n,
+                                                                    bool stream_k) {
+    int64_t smallest = kMaxGroupScaleBlockM + kBlockMStep;
     int64_t largest = 0;
     for (int64_t stages = 3; stages <= kMaxCensusStages; stages++) {
         const uint32_t clean = clean_block_ms(1, block_n, 128, stream_k, GroupedLayout::Dense, stages, true);
@@ -92,10 +94,17 @@ inline int64_t group_scale_census_block_m(const GemmDesc &desc, int64_t block_n,
             GemmConfig config;
             config.block_m = block_m, config.block_n = block_n, config.num_stages = stages;
             const bool fits = get_smem_bytes(config, 0, GroupedLayout::Dense, true) <= desc.smem_bytes;
-            if (fits && (clean >> (block_m / kBlockMStep - 1) & 1)) largest = std::max(largest, block_m);
+            if (fits && (clean >> (block_m / kBlockMStep - 1) & 1)) {
+                smallest = std::min(smallest, block_m);
+                largest = std::max(largest, block_m);
+            }
         }
     }
-    return largest;
+    return {smallest <= kMaxGroupScaleBlockM ? smallest : kMinGroupScaleBlockM, largest};
+}
+
+inline int64_t group_scale_census_block_m(const GemmDesc &desc, int64_t block_n, bool stream_k) {
+    return group_scale_census_block_m_range(desc, block_n, stream_k).second;
 }
 
 // The group-scale rule (G1 to G4 above) for `desc`; `stream_k_override` as in `rule_preferences`.
@@ -108,12 +117,13 @@ inline std::vector<GemmConfig> group_scale_preferences(const GemmDesc &desc, con
         auto grouped_tile = [&](int64_t block_n) {
             const int64_t cap_cfg = block_n == 256 ? rule_class.grouped_group_scale_bn256_block_m
                                                    : rule_class.grouped_group_scale_block_m;
-            const int64_t cap = std::min(cap_cfg, group_scale_census_block_m(desc, block_n, false));
+            const auto [min_clean, max_clean] = group_scale_census_block_m_range(desc, block_n, false);
+            const int64_t cap = std::min(cap_cfg, max_clean);
             const int64_t n_tiles = desc.n / block_n * active;
             const int64_t pieces = ceil_div(m, cap);
             const int64_t waves = ceil_div(pieces * n_tiles, desc.num_sms);
             const int64_t split = std::max<int64_t>(1, std::min(ceil_div(m, 8), waves * desc.num_sms / n_tiles));
-            return std::min(cap, std::max(kMinGroupScaleBlockM, ceil_div(ceil_div(m, split), 8) * 8));
+            return std::min(cap, std::max(min_clean, ceil_div(ceil_div(m, split), 8) * 8));
         };
         const bool wide = rule_class.grouped_group_scale_bn256_block_m > 0 && desc.n % 256 == 0 &&
                           (rule_class.grouped_group_scale_bn256_always ||
@@ -121,9 +131,10 @@ inline std::vector<GemmConfig> group_scale_preferences(const GemmDesc &desc, con
         std::vector<GemmConfig> preferences;
         for (const int64_t block_n : wide ? std::vector<int64_t>{256, 128} : std::vector<int64_t>{128}) {
             const int64_t block_m = grouped_tile(block_n);
-            for (int64_t lower = block_m; lower >= kMinGroupScaleBlockM; lower -= kBlockMStep) {
-                // Depth 5 is clean through BN 256 BM 72; depth 4 drops BN 256 at BM 56 and 64.
-                for (const int64_t stages : {5, 4, 3}) {
+            const int64_t min_clean = group_scale_census_block_m_range(desc, block_n, false).first;
+            for (int64_t lower = block_m; lower >= min_clean; lower -= kBlockMStep) {
+                // Depth 6 stays spill-free on non-power-of-2 K up to BM 160 (BN 128) and BM 64 (BN 256).
+                for (const int64_t stages : {5, 6, 4, 3}) {
                     GemmConfig config;
                     config.block_m = lower, config.num_stages = stages, config.block_n = block_n;
                     preferences.push_back(config);
@@ -135,11 +146,12 @@ inline std::vector<GemmConfig> group_scale_preferences(const GemmDesc &desc, con
     const int64_t m = desc.m;
     auto tile = [&](int64_t block_n) {  // (BM, Stream-K) at BN `block_n`
         const int64_t n_tiles = desc.n / block_n;
+        const int64_t min_clean = group_scale_census_block_m_range(desc, block_n, false).first;
         auto fewest = [&](bool stream_k) {  // the fewest M tiles of at most the cap
             const int64_t cap = std::min(rule_class.group_scale_block_m, group_scale_census_block_m(desc, block_n, stream_k));
             return ceil_div(m, cap);
         };
-        auto even = [&](int64_t pieces) { return std::max(kMinGroupScaleBlockM, ceil_div(ceil_div(m, pieces), 8) * 8); };
+        auto even = [&](int64_t pieces) { return std::max(min_clean, ceil_div(ceil_div(m, pieces), 8) * 8); };
         const int64_t pieces = fewest(false);
         const int64_t tiles = ceil_div(m, even(pieces)) * n_tiles;
         const int64_t tail = tiles > desc.num_sms ? tiles % desc.num_sms : tiles;
@@ -151,7 +163,7 @@ inline std::vector<GemmConfig> group_scale_preferences(const GemmDesc &desc, con
         const int64_t split = std::max<int64_t>(1, std::min(ceil_div(m, 8), waves * desc.num_sms / n_tiles));
         // The Stream-K share: M tiles enough for `group_scale_stream_k_share` K blocks per SM.
         const int64_t share_pieces = ceil_div(rule_class.group_scale_stream_k_share * desc.num_sms, n_tiles * (desc.k / 128));
-        const int64_t split_pieces = std::min(std::max(fewest(true), share_pieces), ceil_div(m, kMinGroupScaleBlockM));
+        const int64_t split_pieces = std::min(std::max(fewest(true), share_pieces), ceil_div(m, min_clean));
         int64_t block_m = stream_k ? even(split_pieces) : even(split);
         // The accumulator bound of a sub-wave BN 128 call.
         const int64_t bound = rule_class.group_scale_tile_elements;
@@ -165,9 +177,10 @@ inline std::vector<GemmConfig> group_scale_preferences(const GemmDesc &desc, con
     std::vector<GemmConfig> preferences;
     for (const int64_t block_n : wide ? std::vector<int64_t>{256, 128} : std::vector<int64_t>{128}) {
         const auto [block_m, stream_k] = tile(block_n);
+        const int64_t min_clean = group_scale_census_block_m_range(desc, block_n, false).first;
         for (const bool split : stream_k ? std::vector<bool>{true, false} : std::vector<bool>{false}) {
-            for (int64_t lower = block_m; lower >= kMinGroupScaleBlockM; lower -= kBlockMStep) {
-                for (const int64_t stages : {5, 4, 3}) {
+            for (int64_t lower = block_m; lower >= min_clean; lower -= kBlockMStep) {
+                for (const int64_t stages : {5, 6, 4, 3}) {
                     GemmConfig config;
                     config.block_m = lower, config.num_stages = stages, config.block_n = block_n;
                     config.use_stream_k = split;
@@ -369,6 +382,49 @@ inline std::vector<GemmConfig> autotune_candidates(const GemmDesc &desc, const R
         candidates.push_back(config);
     }
     return candidates;
+}
+
+// Full legal config enumeration for offline model/shape sweep and census (`check_clean = false` explores
+// resource-legal configs before census bitmasks are populated).
+inline std::vector<GemmConfig> all_legal_configs(const GemmDesc &desc, bool check_clean = true) {
+    check_shape(desc);
+    const int64_t min_bm = desc.group_scales ? kMinGroupScaleBlockM : kBlockMStep;
+    const int64_t max_bm = desc.group_scales ? kMaxGroupScaleBlockM : kMaxBlockM;
+    const std::vector<int64_t> block_ks = desc.group_scales ? std::vector<int64_t>{128} : std::vector<int64_t>{128, 256};
+    const std::vector<std::pair<int64_t, int64_t>> wg_ctas = {{2, 1}, {2, 2}, {1, 2}, {1, 3}, {1, 4}};
+    const std::vector<std::pair<bool, bool>> stream_k_modes =
+        desc.num_experts > 0
+            ? std::vector<std::pair<bool, bool>>{{false, false}}
+            : (desc.group_scales ? std::vector<std::pair<bool, bool>>{{false, false}, {true, false}}
+                                 : std::vector<std::pair<bool, bool>>{{false, false}, {true, false}, {true, true}});
+
+    std::vector<GemmConfig> configs;
+    for (const auto &[math_wgs, ctas] : wg_ctas) {
+        for (const int64_t block_n : {int64_t{128}, int64_t{256}}) {
+            for (const int64_t block_k : block_ks) {
+                for (int64_t block_m = min_bm; block_m <= max_bm; block_m += kBlockMStep) {
+                    for (int64_t stages = 3; stages <= 8; stages++) {
+                        for (const auto &[use_sk, aligned_sk] : stream_k_modes) {
+                            for (const bool m_fast : use_sk ? std::vector<bool>{false} : std::vector<bool>{false, true}) {
+                                GemmConfig config;
+                                config.block_m = block_m;
+                                config.block_n = block_n;
+                                config.block_k = block_k;
+                                config.num_stages = stages;
+                                config.ctas_per_sm = ctas;
+                                config.math_warpgroups = math_wgs;
+                                config.use_stream_k = use_sk;
+                                config.stream_k_aligned = aligned_sk;
+                                config.m_fast_tile_order = m_fast;
+                                if (illegal_reason(config, desc, check_clean) == nullptr) configs.push_back(config);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return configs;
 }
 
 }  // namespace tensorbridge::sm90
