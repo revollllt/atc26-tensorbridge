@@ -21,26 +21,55 @@ struct DriverApi {
     PFN_cuTensorMapEncodeTiled_v12000 cuTensorMapEncodeTiled;
 };
 
+// CUDA 12.4 / 12.5 Green Context entry points are loaded lazily so non-Green-Context GEMMs continue
+// to work on older drivers that lack `cuGreenCtxStreamCreate` (CUDA 12.5).
+struct GreenCtxDriverApi {
+    PFN_cuDeviceGetDevResource_v12040 cuDeviceGetDevResource;
+    PFN_cuDevSmResourceSplitByCount_v12040 cuDevSmResourceSplitByCount;
+    PFN_cuDevResourceGenerateDesc_v12040 cuDevResourceGenerateDesc;
+    PFN_cuGreenCtxCreate_v12040 cuGreenCtxCreate;
+    PFN_cuGreenCtxStreamCreate_v12050 cuGreenCtxStreamCreate;
+    PFN_cuGreenCtxDestroy_v12040 cuGreenCtxDestroy;
+    PFN_cuStreamDestroy_v4000 cuStreamDestroy;
+};
+
+template <typename FnPtr>
+inline void load_driver_symbol(FnPtr &func, const char *symbol, unsigned int cuda_version) {
+    cudaDriverEntryPointQueryResult status;
+    const cudaError_t err = cudaGetDriverEntryPointByVersion(
+        symbol, reinterpret_cast<void **>(&func), cuda_version, cudaEnableDefault, &status);
+    TORCH_CHECK(err == cudaSuccess && status == cudaDriverEntryPointSuccess,
+                "CUDA driver entry point ", symbol, " (CUDA ", cuda_version, ") not found: ",
+                cudaGetErrorString(err), ", query result ", static_cast<int>(status));
+}
+
 inline const DriverApi &driver() {
     static const DriverApi api = [] {
-        auto load = [](auto &func, const char *symbol, unsigned int cuda_version) {
-            cudaDriverEntryPointQueryResult status;
-            const cudaError_t err = cudaGetDriverEntryPointByVersion(
-                symbol, reinterpret_cast<void **>(&func), cuda_version, cudaEnableDefault, &status);
-            TORCH_CHECK(err == cudaSuccess && status == cudaDriverEntryPointSuccess,
-                        "CUDA driver entry point ", symbol, " (CUDA ", cuda_version, ") not found: ",
-                        cudaGetErrorString(err), ", query result ", static_cast<int>(status));
-        };
         DriverApi api;
-        load(api.cuGetErrorName, "cuGetErrorName", 6000);
-        load(api.cuGetErrorString, "cuGetErrorString", 6000);
-        load(api.cuStreamGetCtx, "cuStreamGetCtx", 9020);
-        load(api.cuCtxGetDevResource, "cuCtxGetDevResource", 12040);
-        load(api.cuModuleLoad, "cuModuleLoad", 2000);
-        load(api.cuModuleGetFunction, "cuModuleGetFunction", 2000);
-        load(api.cuFuncSetAttribute, "cuFuncSetAttribute", 9000);
-        load(api.cuLaunchKernelEx, "cuLaunchKernelEx", 11060);
-        load(api.cuTensorMapEncodeTiled, "cuTensorMapEncodeTiled", 12000);
+        load_driver_symbol(api.cuGetErrorName, "cuGetErrorName", 6000);
+        load_driver_symbol(api.cuGetErrorString, "cuGetErrorString", 6000);
+        load_driver_symbol(api.cuStreamGetCtx, "cuStreamGetCtx", 9020);
+        load_driver_symbol(api.cuCtxGetDevResource, "cuCtxGetDevResource", 12040);
+        load_driver_symbol(api.cuModuleLoad, "cuModuleLoad", 2000);
+        load_driver_symbol(api.cuModuleGetFunction, "cuModuleGetFunction", 2000);
+        load_driver_symbol(api.cuFuncSetAttribute, "cuFuncSetAttribute", 9000);
+        load_driver_symbol(api.cuLaunchKernelEx, "cuLaunchKernelEx", 11060);
+        load_driver_symbol(api.cuTensorMapEncodeTiled, "cuTensorMapEncodeTiled", 12000);
+        return api;
+    }();
+    return api;
+}
+
+inline const GreenCtxDriverApi &green_ctx_driver() {
+    static const GreenCtxDriverApi api = [] {
+        GreenCtxDriverApi api;
+        load_driver_symbol(api.cuDeviceGetDevResource, "cuDeviceGetDevResource", 12040);
+        load_driver_symbol(api.cuDevSmResourceSplitByCount, "cuDevSmResourceSplitByCount", 12040);
+        load_driver_symbol(api.cuDevResourceGenerateDesc, "cuDevResourceGenerateDesc", 12040);
+        load_driver_symbol(api.cuGreenCtxCreate, "cuGreenCtxCreate", 12040);
+        load_driver_symbol(api.cuGreenCtxStreamCreate, "cuGreenCtxStreamCreate", 12050);
+        load_driver_symbol(api.cuGreenCtxDestroy, "cuGreenCtxDestroy", 12040);
+        load_driver_symbol(api.cuStreamDestroy, "cuStreamDestroy", 4000);
         return api;
     }();
     return api;

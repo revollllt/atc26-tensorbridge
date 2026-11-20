@@ -21,7 +21,8 @@ namespace tensorbridge {
 template <uint32_t SHAPE_N, uint32_t SHAPE_K, uint32_t OUTPUT_N, uint32_t BLOCK_M, uint32_t BLOCK_N,
           uint32_t kNumStages, uint32_t kNumCtasPerSm, uint32_t kNumMathWarpgroups, bool kUseStreamK,
           bool kMFastTileOrder, bool kScaleMMajor, bool kExactBridge,
-          GroupedLayout kLayout = GroupedLayout::kDense, uint32_t kNumExperts = 0>
+          GroupedLayout kLayout = GroupedLayout::kDense, uint32_t kNumExperts = 0,
+          bool kStreaming = false, bool kSignalDone = false>
 __global__ __launch_bounds__(128 * (kNumMathWarpgroups + 1), kNumCtasPerSm) void sm90_w4a8_pgroup(
     const __grid_constant__ GemmParams params) {
     // Shape checks
@@ -34,11 +35,14 @@ __global__ __launch_bounds__(128 * (kNumMathWarpgroups + 1), kNumCtasPerSm) void
     static_assert(kNumCtasPerSm >= 1 && kNumCtasPerSm <= (kNumMathWarpgroups == 2 ? 2 : 4), "Invalid CTAs per SM");
     static_assert(kNumMathWarpgroups == 2 || kNumCtasPerSm >= 2, "One math warp group exceeds 256 registers per thread");
     static_assert(kNumStages >= 3 && kNumStages <= 32, "Too few stages to overlap loads, or too many barriers");
+    static_assert(!kStreaming || kLayout == GroupedLayout::kMasked, "Streaming overlap requires masked layout");
+    static_assert(!kSignalDone || (kLayout == GroupedLayout::kMasked && !kStreaming),
+                  "Reverse combine signaling applies to non-streaming masked kernels");
 
     // Types
     constexpr uint32_t BLOCK_K = 128;
     using WGMMA = typename mma::sm90::FP8RSMMASelector<BLOCK_M>::type;
-    using Storage = layout::PgroupStorage<BLOCK_M, BLOCK_N, kNumStages, kLayout, kNumExperts>;
+    using Storage = layout::PgroupStorage<BLOCK_M, BLOCK_N, kNumStages, kLayout, kNumExperts, kStreaming>;
     constexpr bool kIndexed = kLayout == GroupedLayout::kIndexed;
     constexpr bool kGrouped = kLayout != GroupedLayout::kDense;
     static_assert(!kGrouped || !kUseStreamK, "Grouped kernels do not split K");
@@ -55,7 +59,7 @@ __global__ __launch_bounds__(128 * (kNumMathWarpgroups + 1), kNumCtasPerSm) void
     // batch, so that the next K block's dequantization follows the promotion and the compiler schedules the two
     // together; on smaller tiles the dequantization runs between the WGMMAs
     constexpr bool kBatchMMA = BLOCK_M * kNumSubTiles > 128;
-    constexpr bool kLookAhead = kGrouped && !kIndexed;
+    constexpr bool kLookAhead = kGrouped && !kIndexed && !kStreaming;
     constexpr bool kUseRingDescs = kGrouped && !kIndexed && (kNumCtasPerSm >= 2 || BLOCK_M < 64);
     constexpr uint32_t kTmaBytesPerStage = BLOCK_M * 128 + kTilesN * (Storage::kTileBytesB + Storage::kTileBytesSFB);
     constexpr uint32_t kMathBarrier = 1;
@@ -75,12 +79,12 @@ __global__ __launch_bounds__(128 * (kNumMathWarpgroups + 1), kNumCtasPerSm) void
 
     // Block scheduler
     auto scheduler = sched::make_scheduler<SHAPE_N, SHAPE_K, BLOCK_M, BLOCK_N, BLOCK_K, kMFastTileOrder, kUseStreamK,
-                                           false, kLayout, kNumExperts>(params, smem);
+                                           false, kLayout, kNumExperts, kStreaming>(params, smem);
     using Tile = typename decltype(scheduler)::Tile;
     Tile tile;
 
     // Load the routing, overlapped with the barrier initialization
-    if constexpr (kGrouped) {
+    if constexpr (kGrouped && !kStreaming) {
         if (warp_idx == kNumMathThreads / 32 + 1) {
             cudaGridDependencySynchronize();
             scheduler.load_routing(params.expert_offsets, params.expert_counts, params.num_tokens_padded);
@@ -102,8 +106,11 @@ __global__ __launch_bounds__(128 * (kNumMathWarpgroups + 1), kNumCtasPerSm) void
             smem.empty_barriers[s]->init(kNumMathThreads / 32);
         }
 
-        if constexpr (kGrouped) smem.routing_ready->init(kIndexed ? 1 : 32);
-        else {}
+        if constexpr (kStreaming) {
+            scheduler.init_barriers(kNumMathThreads);
+        } else if constexpr (kGrouped) {
+            smem.routing_ready->init(kIndexed ? 1 : 32);
+        } else {}
         if constexpr (kIndexed) {
             smem.rows_consumed[0]->init(kNumMathThreads);
             smem.rows_consumed[1]->init(kNumMathThreads);
@@ -129,17 +136,22 @@ __global__ __launch_bounds__(128 * (kNumMathWarpgroups + 1), kNumCtasPerSm) void
 
     if (warp_idx >= kNumMathThreads / 32) {
         const uint32_t tma_warp_idx = warp_idx - kNumMathThreads / 32;
-        if constexpr (kGrouped) {
+        if constexpr (kGrouped && !kStreaming) {
             if (tma_warp_idx == 1) scheduler.prepare();
         }
         // TMA warp-group for loading data
         cutlass::arch::warpgroup_reg_dealloc<kNumTMARegisters>();
         if (tma_warp_idx == 0) {
             // TMA warp
+            if constexpr (kStreaming) cudaGridDependencySynchronize();
             scheduler.wait_ready();
             uint32_t capacity = 0;
             if constexpr (kLayout == GroupedLayout::kMasked) capacity = params.shape_m / kNumExperts;
-            while (scheduler.get_next_block(tile)) {
+            auto next_producer_tile = [&](Tile &t) {
+                if constexpr (kStreaming) return scheduler.get_next_block_producer(t);
+                else return scheduler.get_next_block(t);
+            };
+            while (next_producer_tile(tile)) {
                 const uint32_t m_idx = tile.row_begin;
                 uint64_t tile_sfa_base = 0;
                 if constexpr (!kIndexed) {
@@ -407,6 +419,10 @@ __global__ __launch_bounds__(128 * (kNumMathWarpgroups + 1), kNumCtasPerSm) void
                         if (token + 1 < num_tokens) column[OUTPUT_N] = rounded.y;
                     }
                 }
+                if constexpr (kSignalDone) {
+                    epilogue::signal_expert_tile_done<SHAPE_N / BLOCK_N, kNumMathThreads, kMathBarrier, true, false>(
+                        params, smem, tile.expert_id);
+                }
             } else {
                 float2 token_scales[kOutputRows / 8];
                 for (uint32_t group = 0; group < kOutputRows / 8; group++) {
@@ -455,6 +471,10 @@ __global__ __launch_bounds__(128 * (kNumMathWarpgroups + 1), kNumCtasPerSm) void
                 if (!tile.is_full_depth() && threadIdx.x == 0) ptx::gmem_lock_increment(&params.locks[tile.lock_idx]);
                 if constexpr (kIndexed) smem.rows_consumed[tile.route_buffer]->arrive();
                 else {}
+                if constexpr (kSignalDone) {
+                    epilogue::signal_expert_tile_done<SHAPE_N / BLOCK_N, kNumMathThreads, kMathBarrier, false, true>(
+                        params, smem, tile.expert_id);
+                }
             }
             if constexpr (!kLookAhead) has_next = scheduler.get_next_block(next_tile);
         }

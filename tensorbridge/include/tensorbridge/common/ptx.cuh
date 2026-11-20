@@ -61,4 +61,36 @@ CUTLASS_DEVICE void gmem_lock_increment(int32_t *lock) {
     asm volatile("red.relaxed.gpu.global.add.s32 [%0], %1;\n" ::"l"(lock), "r"(1) : "memory");
 }
 
+// Route B streaming overlap: GPU-scope acquire load, release store, atomic increment, TMA global completion wait,
+// and polite spin backoff.
+CUTLASS_DEVICE uint32_t ld_acquire_gpu_u32(const uint32_t *ptr) {
+    uint32_t val;
+    asm volatile("ld.global.acquire.gpu.b32 %0, [%1];\n" : "=r"(val) : "l"(ptr) : "memory");
+    return val;
+}
+
+CUTLASS_DEVICE void gmem_signal_release(uint32_t *ptr, uint32_t value) {
+    asm volatile("st.release.gpu.global.b32 [%0], %1;\n" ::"l"(ptr), "r"(value) : "memory");
+}
+
+CUTLASS_DEVICE uint32_t gmem_atomic_add_u32(uint32_t *ptr, uint32_t inc) {
+    uint32_t old;
+    asm volatile("atom.global.acq_rel.gpu.add.u32 %0, [%1], %2;\n" : "=r"(old) : "l"(ptr), "r"(inc) : "memory");
+    return old;
+}
+
+// Wait until all previously committed TMA bulk stores from this thread have completed writing to global memory
+// (unlike `cute::tma_store_wait<0>()`, which emits `.read` and only waits for SMEM reads to finish).
+CUTLASS_DEVICE void tma_store_wait_global() {
+    asm volatile("cp.async.bulk.wait_group 0;\n" ::: "memory");
+}
+
+CUTLASS_DEVICE void async_proxy_fence_global() {
+    asm volatile("fence.proxy.async.global;\n" ::: "memory");
+}
+
+CUTLASS_DEVICE void nanosleep_ns(uint32_t ns) {
+    asm volatile("nanosleep.u32 %0;\n" ::"r"(ns));
+}
+
 }  // namespace tensorbridge::ptx

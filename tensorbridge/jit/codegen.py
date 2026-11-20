@@ -66,32 +66,38 @@ class KernelSource:
 
 def generate(
     n: int, k: int, config: GemmConfig, num_experts: int = 0, layout: GroupedLayout = "dense",
-    bridge: Bridge = "exact",
+    bridge: Bridge = "exact", *, streaming: bool = False, signal_done: bool = False,
 ) -> KernelSource:
     """The kernel for one weight shape `(n, k)` and config: `SHAPE_N` and `SHAPE_K` are the shape padded to the
     weight unit, `OUTPUT_N` is `n`."""
+    if streaming and layout != "masked":
+        raise ValueError("streaming overlap requires masked layout")
+    if signal_done and (layout != "masked" or streaming):
+        raise ValueError("reverse combine signaling requires non-streaming masked layout")
     layout_name = f"tensorbridge::GroupedLayout::{LAYOUT_NAMES[layout]}"
     tile = f"{config.block_m}, {config.block_n}, {config.block_k}, {config.num_stages}"
+    overlap_args = f", {cpp(streaming)}, {cpp(signal_done)}" if (streaming or signal_done) else ""
+    storage_overlap = ", true" if streaming else ""
     name = (
         f"tensorbridge::sm90_w4a8_ptoken<{pad_to_unit(n)}, {pad_to_unit(k)}, {n}, {tile}, {config.ctas_per_sm}, "
         f"{config.math_warpgroups}, {cpp(config.use_stream_k)}, "
         f"{cpp(config.use_stream_k and config.stream_k_aligned)}, "
         f"{cpp(config.m_fast_tile_order)}, {layout_name}, "
-        f"{num_experts}, {cpp(bridge == 'exact')}>"
+        f"{num_experts}, {cpp(bridge == 'exact')}{overlap_args}>"
     )
     source = f"""\
 #include <tensorbridge/impls/sm90_w4a8_ptoken.cuh>
 
 // Read back by the JIT: the launch has to reserve this much shared memory.
 extern "C" __constant__ uint32_t SMEM_BYTES =
-    sizeof(tensorbridge::layout::PtokenStorage<{tile}, {layout_name}, {num_experts}>);
+    sizeof(tensorbridge::layout::PtokenStorage<{tile}, {layout_name}, {num_experts}{storage_overlap}>);
 """
     return KernelSource(source, name)
 
 
 def generate_pgroup(
     n: int, k: int, config: GemmConfig, scale_m_major: bool, bridge: Bridge = "exact",
-    num_experts: int = 0, layout: GroupedLayout = "dense",
+    num_experts: int = 0, layout: GroupedLayout = "dense", *, streaming: bool = False, signal_done: bool = False,
 ) -> KernelSource:
     """The `[1, 128]` activation-scale kernel (`impls/sm90_w4a8_pgroup.cuh`) for one weight shape `(n, k)` and
     config, padded as `generate` pads it: dense or grouped, one 128-deep K block per stage.
@@ -109,11 +115,17 @@ def generate_pgroup(
             f"the group-scale kernel takes block_k 128, plain Stream-K, and valid (math_warpgroups, ctas_per_sm), "
             f"not {config}"
         )
+    if streaming and layout != "masked":
+        raise ValueError("streaming overlap requires masked layout")
+    if signal_done and (layout != "masked" or streaming):
+        raise ValueError("reverse combine signaling requires non-streaming masked layout")
+    overlap_args = f", {cpp(streaming)}, {cpp(signal_done)}" if (streaming or signal_done) else ""
+    storage_overlap = ", true" if streaming else ""
     name = (
         f"tensorbridge::sm90_w4a8_pgroup<{pad_to_unit(n)}, {pad_to_unit(k)}, {n}, {config.block_m}, {config.block_n}, "
         f"{config.num_stages}, {config.ctas_per_sm}, {config.math_warpgroups}, {cpp(config.use_stream_k)}, "
         f"{cpp(config.m_fast_tile_order)}, {cpp(scale_m_major)}, {cpp(bridge == 'exact')}, "
-        f"tensorbridge::GroupedLayout::{LAYOUT_NAMES[layout]}, {num_experts}>"
+        f"tensorbridge::GroupedLayout::{LAYOUT_NAMES[layout]}, {num_experts}{overlap_args}>"
     )
     source = f"""\
 #include <tensorbridge/impls/sm90_w4a8_pgroup.cuh>
@@ -121,7 +133,7 @@ def generate_pgroup(
 // Read back by the JIT: the launch has to reserve this much shared memory.
 extern "C" __constant__ uint32_t SMEM_BYTES =
     sizeof(tensorbridge::layout::PgroupStorage<{config.block_m}, {config.block_n}, {config.num_stages},
-        tensorbridge::GroupedLayout::{LAYOUT_NAMES[layout]}, {num_experts}>);
+        tensorbridge::GroupedLayout::{LAYOUT_NAMES[layout]}, {num_experts}{storage_overlap}>);
 """
     return KernelSource(source, name)
 

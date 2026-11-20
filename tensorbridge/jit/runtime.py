@@ -189,7 +189,7 @@ def get_kernel(
 def register_device_kernel(
     device: int, kernel: codegen.KernelSource, include_root: Path, n: int, k: int, config: GemmConfig,
     num_experts: int = 0, layout: codegen.GroupedLayout = "dense", activation_scale_groups: int = 1,
-    scale_m_major: bool = False, block_scales: bool = False,
+    scale_m_major: bool = False, block_scales: bool = False, streaming: bool = False, signal_done: bool = False,
 ) -> int:
     """Compile `kernel` against the headers under `include_root` and register it on `device` for the weight shape
     `(n, k)`; returns its id. `activation_scale_groups` and `scale_m_major` describe the activation scales the kernel
@@ -211,7 +211,7 @@ def register_device_kernel(
         return torch.ops.tensorbridge.register_kernel(
             compiled.cubin_path, compiled.lowered_name, n, k, config.to_list(),
             compiled.smem_bytes, num_experts, codegen.LAYOUT_IDS[layout], activation_scale_groups, scale_m_major,
-            block_scales,
+            block_scales, streaming, signal_done,
         )
 
 
@@ -219,18 +219,26 @@ def get_grouped_kernel(
     n: int, k: int, num_experts: int, layout: codegen.GroupedLayout, config: GemmConfig,
     include_root: Path | None = None, bridge: codegen.Bridge = "exact", device: int | None = None,
     source: codegen.KernelSource | None = None, *, group_scales: bool = False,
+    streaming: bool = False, signal_done: bool = False,
 ) -> int:
     """Compile a grouped specialization through the shared JIT and registration path."""
     if layout == "dense" or num_experts < 1:
         raise ValueError("a grouped kernel needs a grouped layout and at least one expert")
     if config.use_stream_k:
         raise ValueError("grouped GEMM does not support Stream-K")
-    if group_scales:
-        from tensorbridge.jit import compiler
+    from tensorbridge.jit import compiler
 
-        device = torch.cuda.current_device() if device is None else device
-        kernel = source or codegen.generate_pgroup(n, k, config, False, bridge, num_experts, layout)
+    device = torch.cuda.current_device() if device is None else device
+    if group_scales:
+        kernel = source or codegen.generate_pgroup(
+            n, k, config, False, bridge, num_experts, layout, streaming=streaming, signal_done=signal_done,
+        )
         return register_device_kernel(device, kernel, include_root or compiler.INCLUDE_DIR, n, k, config,
-                                      num_experts, layout, k // 128, block_scales=True)
+                                      num_experts, layout, k // 128, block_scales=True,
+                                      streaming=streaming, signal_done=signal_done)
     else:
-        return get_kernel(n, k, config, include_root, bridge, num_experts, layout, source, device)
+        kernel = source or codegen.generate(
+            n, k, config, num_experts, layout, bridge, streaming=streaming, signal_done=signal_done,
+        )
+        return register_device_kernel(device, kernel, include_root or compiler.INCLUDE_DIR, n, k, config,
+                                      num_experts, layout, streaming=streaming, signal_done=signal_done)

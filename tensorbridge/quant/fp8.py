@@ -67,43 +67,131 @@ def quantize_moe_rows(
     capacity: tl.constexpr, output_rows: tl.tensor, groups: tl.constexpr, top_k: tl.constexpr, block: tl.constexpr,
     activation: tl.constexpr, masked: tl.constexpr, bounded: tl.constexpr, scatter: tl.constexpr,
     m_major_scales: tl.constexpr = False, scale_stride_k: tl.constexpr = 0,
+    rows_per_tile: tl.constexpr = 4,
 ) -> None:
     tl.extra.cuda.gdc_launch_dependents()
-    row = (tl.program_id(0) * 4 + tl.arange(0, 4)).to(tl.int64)
-    group = tl.program_id(1)
-    columns = group * block + tl.arange(0, block)
-    if masked:
-        valid = (row < rows) & (row % capacity < tl.load(counts_ptr + row // capacity, row < rows, other=0))
-    elif bounded:
-        valid = (row < rows) & (row < tl.load(counts_ptr))
-    else:
-        valid = row < rows
-    input_values = tl.load(input_ptr + row[:, None] * input_stride + columns[None, :],
-                           valid[:, None] & (columns[None, :] < width), other=0).to(tl.float32)
-    if activation:
-        up = tl.load(input_ptr + row[:, None] * input_stride + width + columns[None, :],
-                     valid[:, None] & (columns[None, :] < width), other=0).to(tl.float32)
-        silu = tl.extra.cuda.libdevice.div_rn(
-            input_values, 1.0 + tl.extra.cuda.libdevice.exp(-input_values)).to(tl.bfloat16)
-        values = (silu.to(tl.float32) * up).to(tl.bfloat16).to(tl.float32)
-    else:
-        values = input_values
-    scales = tl.maximum(tl.max(tl.abs(values), axis=1), 1e-30) / 448
-    quantized = (values / scales[:, None]).to(tl.float8e4nv)
-    if scatter:
-        for route in tl.static_range(top_k):
-            target = tl.load(scatter_ptr + row * top_k + route, row < rows, other=output_rows)
-            local = valid & (target >= 0) & (target < output_rows)
-            tl.store(output_ptr + target[:, None].to(tl.int64) * width + columns[None, :], quantized,
-                     local[:, None] & (columns[None, :] < width))
-            tl.store(scale_ptr + target.to(tl.int64) * groups + group, scales, local)
-    else:
-        tl.store(output_ptr + row[:, None] * width + columns[None, :], quantized,
-                 valid[:, None] & (columns[None, :] < width))
-        if m_major_scales:
-            tl.store(scale_ptr + group * scale_stride_k + row, scales, valid)
+    row_start = (tl.program_id(0) * rows_per_tile).to(tl.int64)
+    n_valid = tl.load(counts_ptr).to(tl.int64) if bounded else row_start + rows_per_tile
+    if (not bounded) or (row_start < n_valid):
+        group = tl.program_id(1)
+        columns = group * block + tl.arange(0, block)
+        col_mask = columns < width
+        if rows_per_tile == 1 and not scatter:
+            if masked:
+                valid = (row_start < rows) & (
+                    row_start % capacity < tl.load(counts_ptr + row_start // capacity, row_start < rows, other=0)
+                )
+            elif bounded:
+                valid = (row_start < rows) & (row_start < n_valid)
+            else:
+                valid = row_start < rows
+            if valid:
+                input_values = tl.load(input_ptr + row_start * input_stride + columns, col_mask, other=0).to(tl.float32)
+                if activation:
+                    up = tl.load(input_ptr + row_start * input_stride + width + columns, col_mask, other=0).to(tl.float32)
+                    silu = tl.extra.cuda.libdevice.div_rn(
+                        input_values, 1.0 + tl.extra.cuda.libdevice.exp(-input_values)).to(tl.bfloat16)
+                    values = (silu.to(tl.float32) * up).to(tl.bfloat16).to(tl.float32)
+                else:
+                    values = input_values
+                scale = tl.maximum(tl.max(tl.abs(values), axis=0), 1e-30) / 448
+                quantized = (values / scale).to(tl.float8e4nv)
+                tl.store(output_ptr + row_start * width + columns, quantized, col_mask)
+                if m_major_scales:
+                    tl.store(scale_ptr + group * scale_stride_k + row_start, scale)
+                else:
+                    tl.store(scale_ptr + row_start * groups + group, scale)
         else:
-            tl.store(scale_ptr + row * groups + group, scales, valid)
+            row = row_start + tl.arange(0, rows_per_tile).to(tl.int64)
+            if masked:
+                valid = (row < rows) & (row % capacity < tl.load(counts_ptr + row // capacity, row < rows, other=0))
+            elif bounded:
+                valid = (row < rows) & (row < n_valid)
+            else:
+                valid = row < rows
+            input_values = tl.load(input_ptr + row[:, None] * input_stride + columns[None, :],
+                                   valid[:, None] & col_mask[None, :], other=0).to(tl.float32)
+            if activation:
+                up = tl.load(input_ptr + row[:, None] * input_stride + width + columns[None, :],
+                             valid[:, None] & col_mask[None, :], other=0).to(tl.float32)
+                silu = tl.extra.cuda.libdevice.div_rn(
+                    input_values, 1.0 + tl.extra.cuda.libdevice.exp(-input_values)).to(tl.bfloat16)
+                values = (silu.to(tl.float32) * up).to(tl.bfloat16).to(tl.float32)
+            else:
+                values = input_values
+            scales = tl.maximum(tl.max(tl.abs(values), axis=1), 1e-30) / 448
+            quantized = (values / scales[:, None]).to(tl.float8e4nv)
+            if scatter:
+                for route in tl.static_range(top_k):
+                    target = tl.load(scatter_ptr + row * top_k + route, row < rows, other=output_rows)
+                    local = valid & (target >= 0) & (target < output_rows)
+                    tl.store(output_ptr + target[:, None].to(tl.int64) * width + columns[None, :], quantized,
+                             local[:, None] & col_mask[None, :])
+                    tl.store(scale_ptr + target.to(tl.int64) * groups + group, scales, local)
+            else:
+                tl.store(output_ptr + row[:, None] * width + columns[None, :], quantized,
+                         valid[:, None] & col_mask[None, :])
+                if m_major_scales:
+                    tl.store(scale_ptr + group * scale_stride_k + row, scales, valid)
+                else:
+                    tl.store(scale_ptr + row * groups + group, scales, valid)
+
+
+@triton.jit
+def quantize_moe_masked_rows(
+    input_ptr: tl.tensor, output_ptr: tl.tensor, scale_ptr: tl.tensor, counts_ptr: tl.tensor,
+    input_stride: tl.constexpr, width: tl.constexpr, capacity: tl.constexpr, groups: tl.constexpr,
+    block: tl.constexpr, rows_per_tile: tl.constexpr, blocks_per_expert: tl.constexpr,
+    activation: tl.constexpr,
+) -> None:
+    """Compact persistent masked-MoE quantizer: launches O(E * blocks_per_expert * groups) CTAs
+    instead of O(E * capacity * groups), skipping all invalid capacity slots with zero wasted math."""
+    tl.extra.cuda.gdc_launch_dependents()
+    expert = tl.program_id(0).to(tl.int64)
+    cnt = tl.maximum(tl.minimum(tl.load(counts_ptr + expert).to(tl.int64), capacity), 0)
+    tile_id = tl.program_id(1).to(tl.int64)
+    r_start = tile_id * rows_per_tile
+    if r_start < cnt:
+        group = tl.program_id(2)
+        columns = group * block + tl.arange(0, block)
+        col_mask = columns < width
+        base_row = expert * capacity
+        step = blocks_per_expert * rows_per_tile
+        while r_start < cnt:
+            if rows_per_tile == 1:
+                row = base_row + r_start
+                input_values = tl.load(input_ptr + row * input_stride + columns, col_mask, other=0.0).to(tl.float32)
+                if activation:
+                    up = tl.load(input_ptr + row * input_stride + width + columns, col_mask, other=0.0).to(tl.float32)
+                    silu = tl.extra.cuda.libdevice.div_rn(
+                        input_values, 1.0 + tl.extra.cuda.libdevice.exp(-input_values)).to(tl.bfloat16)
+                    values = (silu.to(tl.float32) * up).to(tl.bfloat16).to(tl.float32)
+                else:
+                    values = input_values
+                scale = tl.maximum(tl.max(tl.abs(values), axis=0), 1e-30) / 448
+                quantized = (values / scale).to(tl.float8e4nv)
+                tl.store(output_ptr + row * width + columns, quantized, col_mask)
+                tl.store(scale_ptr + row * groups + group, scale)
+            else:
+                local_r = r_start + tl.arange(0, rows_per_tile).to(tl.int64)
+                valid = local_r < cnt
+                row = base_row + local_r
+                mask2d = valid[:, None] & col_mask[None, :]
+                input_values = tl.load(input_ptr + row[:, None] * input_stride + columns[None, :],
+                                       mask2d, other=0.0).to(tl.float32)
+                if activation:
+                    up = tl.load(input_ptr + row[:, None] * input_stride + width + columns[None, :],
+                                 mask2d, other=0.0).to(tl.float32)
+                    silu = tl.extra.cuda.libdevice.div_rn(
+                        input_values, 1.0 + tl.extra.cuda.libdevice.exp(-input_values)).to(tl.bfloat16)
+                    values = (silu.to(tl.float32) * up).to(tl.bfloat16).to(tl.float32)
+                else:
+                    values = input_values
+                scales = tl.maximum(tl.max(tl.abs(values), axis=1), 1e-30) / 448
+                quantized = (values / scales[:, None]).to(tl.float8e4nv)
+                tl.store(output_ptr + row[:, None] * width + columns[None, :], quantized, mask2d)
+                tl.store(scale_ptr + row * groups + group, scales, valid)
+            r_start += step
 
 
 def quantize_group_128(
@@ -147,15 +235,42 @@ def quantize_moe(
     rows = inputs.size(0)
     width = inputs.size(1) // (2 if activation else 1)
     output, scales = out
+    if rows == 0:
+        return output, scales
     groups = triton.cdiv(width, 128) if mode == "group_128" else 1
     block = 128 if mode == "group_128" else triton.next_power_of_2(width)
+    if expert_counts is not None and scatter_idx is None:
+        num_experts = expert_counts.numel()
+        capacity = rows // num_experts
+        if num_experts == 0 or capacity == 0:
+            return output, scales
+        if mode == "per_token":
+            rows_per_tile = 1
+            blocks_per_expert = min(capacity, max(4, triton.cdiv(512, num_experts)))
+            warps = num_warps(block)
+        else:
+            rows_per_tile = 4
+            max_tiles = triton.cdiv(capacity, rows_per_tile)
+            blocks_per_expert = min(max_tiles, max(1, 2048 // max(1, num_experts * groups)))
+            warps = 4
+        quantize_moe_masked_rows[(num_experts, blocks_per_expert, groups)](
+            inputs, output, scales, expert_counts,
+            inputs.stride(0), width, capacity, groups,
+            block, rows_per_tile, blocks_per_expert, activation,
+            num_warps=warps, num_stages=1,
+        )
+        return output, scales
+
     capacity = rows // expert_counts.numel() if expert_counts is not None else 1
-    quantize_moe_rows[(triton.cdiv(rows, 4), groups)](
+    rows_per_tile = 1 if (mode == "per_token" and scatter_idx is None) else 4
+    warps = num_warps(block) if rows_per_tile == 1 else 4
+    quantize_moe_rows[(triton.cdiv(rows, rows_per_tile), groups)](
         inputs, output, scales, expert_counts if expert_counts is not None else num_valid_rows, scatter_idx,
         inputs.stride(0), rows, width, capacity, output.size(0), groups,
         1 if scatter_idx is None else scatter_idx.size(1), block,
         activation, expert_counts is not None, num_valid_rows is not None, scatter_idx is not None,
-        num_warps=4, num_stages=1,
+        False, 0, rows_per_tile,
+        num_warps=warps, num_stages=1,
     )
     return output, scales
 

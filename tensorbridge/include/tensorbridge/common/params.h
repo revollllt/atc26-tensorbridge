@@ -24,6 +24,27 @@ struct StreamKSplit {
     uint32_t aligned_slices;    // aligned slices: the slices of each tail tile
 };
 
+// One ready masked M-tile published by a concurrent producer (Dispatch / Comm Green Context)
+// into `StreamingParams::ready_ring`. `row_end` is frozen at publish time so TMA and math warps agree.
+struct StreamingTile {
+    uint32_t expert_id;
+    uint32_t row_begin;
+    uint32_t row_end;
+    uint32_t m_tile_idx;
+};
+
+// Device-side streaming overlap metadata (Route B: GC-MoE). All pointers are null for non-streaming calls.
+struct StreamingParams {
+    const StreamingTile *ready_ring;  // [ring_capacity] published ready M-tiles
+    const uint32_t *write_head;       // [1] monotonically incremented with release semantics
+    const uint32_t *dispatch_done;    // [1] set to 1 with release semantics when producer is done
+    uint32_t *work_cursor;            // [1] global atomic cursor across CTAs (reset to 0 per launch)
+    uint32_t *tile_done_counts;       // [E] atomic tile completion counter incremented by epilogue
+    uint32_t *combine_ready;          // [E] set to 1 with release semantics once all tiles of expert e finish
+    uint32_t ring_capacity;           // capacity of ready_ring (0 = disabled)
+    uint32_t reserved;
+};
+
 // A grouped kernel (`GroupedLayout`, `common/utils.cuh`) also reads the routing
 // of its layout; the other routing pointers are null.
 struct alignas(128) GemmParams {
@@ -48,10 +69,11 @@ struct alignas(128) GemmParams {
     uint32_t top_k;       // indexed: routes per input row
     StreamKSplit stream_k;  // Stream-K kernels only
     uint64_t sfa_stride_expert;  // masked scales may have a strided expert dimension
+    StreamingParams streaming;   // Route B GC-MoE streaming overlap & epilogue reverse signaling
 };
 
 // Every member is naturally aligned, so size and alignment pin the layout (NVRTC has no `offsetof`).
-static_assert(sizeof(CUtensorMap) == 128 && sizeof(GemmParams) == 640 && alignof(GemmParams) == 128,
+static_assert(sizeof(CUtensorMap) == 128 && sizeof(GemmParams) == 768 && alignof(GemmParams) == 128,
               "The launcher and the kernels must agree on the layout");
 
 }  // namespace tensorbridge

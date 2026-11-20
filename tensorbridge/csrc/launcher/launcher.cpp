@@ -21,6 +21,7 @@
 #include <tensorbridge/common/params.h>
 
 #include "../heuristics/sm90.hpp"
+#include "./green_ctx.hpp"
 #include "./tma.h"
 
 // Torch library `tensorbridge`: config selection, and loading and launching the
@@ -50,6 +51,8 @@ struct Kernel {
     // The weight scales by K blocks, each channel's 8 scale groups of a block in a row (`impls/sm90_w4a8_pgroup.cuh`,
     // `tensorbridge.experimental.prepare`).
     bool block_scales;
+    bool streaming;
+    bool signal_done;
 };
 
 static std::unordered_map<int64_t, Kernel> g_kernels;
@@ -205,7 +208,8 @@ int64_t config_smem_bytes(std::vector<int64_t> config, int64_t num_experts, int6
 int64_t register_kernel(
     const std::string &cubin_path, const std::string &func_name,
     int64_t shape_n, int64_t shape_k, std::vector<int64_t> config, int64_t smem_bytes,
-    int64_t num_experts, int64_t layout, int64_t activation_scale_groups, bool scale_m_major, bool block_scales) {
+    int64_t num_experts, int64_t layout, int64_t activation_scale_groups, bool scale_m_major, bool block_scales,
+    bool streaming, bool signal_done) {
     CUmodule module;
     CUfunction func;
     check_curesult(driver().cuModuleLoad(&module, cubin_path.c_str()), "cuModuleLoad");
@@ -214,7 +218,7 @@ int64_t register_kernel(
     const int64_t kernel_id = static_cast<int64_t>(g_kernels.size());
     g_kernels[kernel_id] = {func, GemmConfig::from_vector(config), shape_n, shape_k, static_cast<uint32_t>(smem_bytes),
                             num_experts, static_cast<GroupedLayout>(layout), activation_scale_groups, scale_m_major,
-                            block_scales};
+                            block_scales, streaming, signal_done};
     return kernel_id;
 }
 
@@ -238,7 +242,11 @@ at::Tensor launch_kernel_impl(
     int64_t kernel_id, at::Tensor a, at::Tensor a_scale, at::Tensor b, at::Tensor sfb, at::Tensor global_scale, at::Tensor locks,
     std::optional<at::Tensor> d_, bool enable_pdl,
     std::optional<at::Tensor> sorted_ids, std::optional<at::Tensor> expert_ids,
-    std::optional<at::Tensor> num_tokens_padded, std::optional<at::Tensor> expert_layout, int64_t top_k) {
+    std::optional<at::Tensor> num_tokens_padded, std::optional<at::Tensor> expert_layout, int64_t top_k,
+    std::optional<at::Tensor> ready_ring = std::nullopt, std::optional<at::Tensor> write_head = std::nullopt,
+    std::optional<at::Tensor> dispatch_done = std::nullopt, std::optional<at::Tensor> work_cursor = std::nullopt,
+    std::optional<at::Tensor> tile_done_counts = std::nullopt,
+    std::optional<at::Tensor> combine_ready = std::nullopt) {
     TORCH_CHECK(g_kernels.find(kernel_id) != g_kernels.end(), "Unknown kernel id ", kernel_id);
     const Kernel &kernel = g_kernels[kernel_id];
     const GemmConfig &config = kernel.config;
@@ -301,7 +309,26 @@ at::Tensor launch_kernel_impl(
             check_tensor(*num_tokens_padded, "num_tokens_padded", dev, at::ScalarType::Int, {1});
             TORCH_CHECK(expert_ids->numel() >= (sorted_ids->numel() + config.block_m - 1) / config.block_m,
                         "indexed routing must provide one expert per aligned block");
+        } else if (ready_ring.has_value()) {
+            TORCH_CHECK(kernel.streaming, "ready_ring was supplied to a non-streaming kernel");
+            TORCH_CHECK(kernel.layout == GroupedLayout::Masked, "streaming overlap requires masked layout");
+            TORCH_CHECK(m % experts == 0, "masked activation rows must divide into equal expert capacities");
+            TORCH_CHECK(write_head && dispatch_done && work_cursor,
+                        "streaming overlap requires ready_ring, write_head, dispatch_done and work_cursor");
+            TORCH_CHECK(ready_ring->is_cuda() && ready_ring->get_device() == dev && ready_ring->is_contiguous() &&
+                            ready_ring->dim() == 2 && ready_ring->size(1) == 4 && ready_ring->element_size() == 4,
+                        "ready_ring must be contiguous 4-byte [ring_capacity, 4] CUDA tensor on the device of `a`");
+            TORCH_CHECK(write_head->is_cuda() && write_head->get_device() == dev && write_head->numel() == 1 &&
+                            write_head->element_size() == 4,
+                        "write_head must be a 1-element 32-bit CUDA tensor on the device of `a`");
+            TORCH_CHECK(dispatch_done->is_cuda() && dispatch_done->get_device() == dev &&
+                            dispatch_done->numel() == 1 && dispatch_done->element_size() == 4,
+                        "dispatch_done must be a 1-element 32-bit CUDA tensor on the device of `a`");
+            TORCH_CHECK(work_cursor->is_cuda() && work_cursor->get_device() == dev && work_cursor->numel() == 1 &&
+                            work_cursor->element_size() == 4,
+                        "work_cursor must be a 1-element 32-bit CUDA tensor on the device of `a`");
         } else {
+            TORCH_CHECK(!kernel.streaming, "streaming kernel requires ready_ring/write_head/dispatch_done/work_cursor");
             TORCH_CHECK(expert_layout.has_value(), "grouped routing needs expert offsets or counts");
             if (kernel.layout == GroupedLayout::Contiguous) {
                 check_tensor(*expert_layout, "expert_offsets", dev, at::ScalarType::Long, {experts + 1});
@@ -309,6 +336,20 @@ at::Tensor launch_kernel_impl(
                 check_tensor(*expert_layout, "expert_counts", dev, at::ScalarType::Int, {experts});
                 TORCH_CHECK(m % experts == 0, "masked activation rows must divide into equal expert capacities");
             }
+        }
+        if (tile_done_counts.has_value() || combine_ready.has_value()) {
+            TORCH_CHECK(kernel.signal_done, "tile_done_counts/combine_ready supplied to a non-signaling kernel");
+            TORCH_CHECK(tile_done_counts && combine_ready, "reverse signaling needs both tile_done_counts and combine_ready");
+            TORCH_CHECK(tile_done_counts->is_cuda() && tile_done_counts->get_device() == dev &&
+                            tile_done_counts->is_contiguous() && tile_done_counts->numel() == experts &&
+                            tile_done_counts->element_size() == 4,
+                        "tile_done_counts must be contiguous [E] 32-bit CUDA tensor on the device of `a`");
+            TORCH_CHECK(combine_ready->is_cuda() && combine_ready->get_device() == dev &&
+                            combine_ready->is_contiguous() && combine_ready->numel() == experts &&
+                            combine_ready->element_size() == 4,
+                        "combine_ready must be contiguous [E] 32-bit CUDA tensor on the device of `a`");
+        } else {
+            TORCH_CHECK(!kernel.signal_done, "signaling kernel requires tile_done_counts and combine_ready");
         }
     }
     check_tensor(d, "d", dev, at::ScalarType::BFloat16, {output_rows, n});
@@ -332,8 +373,8 @@ at::Tensor launch_kernel_impl(
                                      : make_tma_desc(sfb.view({-1, padded_n}), 128, 8, 0);
 
     const uint32_t shape_m = static_cast<uint32_t>(m);
-    void *offsets_ptr = kernel.layout == GroupedLayout::Contiguous ? expert_layout->data_ptr() : nullptr;
-    void *counts_ptr = kernel.layout == GroupedLayout::Masked ? expert_layout->data_ptr() : nullptr;
+    void *offsets_ptr = kernel.layout == GroupedLayout::Contiguous && expert_layout ? expert_layout->data_ptr() : nullptr;
+    void *counts_ptr = kernel.layout == GroupedLayout::Masked && expert_layout ? expert_layout->data_ptr() : nullptr;
     void *sorted_ptr = indexed ? sorted_ids->data_ptr() : nullptr;
     void *experts_ptr = indexed ? expert_ids->data_ptr() : nullptr;
     void *padded_ptr = indexed ? num_tokens_padded->data_ptr() : nullptr;
@@ -366,6 +407,18 @@ at::Tensor launch_kernel_impl(
             stream_k.divisor_shift = log2_divisor - 1;
         }
     }
+    tensorbridge::StreamingParams streaming_params = {};
+    if (ready_ring.has_value()) {
+        streaming_params.ready_ring = reinterpret_cast<const tensorbridge::StreamingTile *>(ready_ring->data_ptr());
+        streaming_params.write_head = reinterpret_cast<const uint32_t *>(write_head->data_ptr());
+        streaming_params.dispatch_done = reinterpret_cast<const uint32_t *>(dispatch_done->data_ptr());
+        streaming_params.work_cursor = reinterpret_cast<uint32_t *>(work_cursor->data_ptr());
+        streaming_params.ring_capacity = static_cast<uint32_t>(ready_ring->size(0));
+    }
+    if (tile_done_counts.has_value()) {
+        streaming_params.tile_done_counts = reinterpret_cast<uint32_t *>(tile_done_counts->data_ptr());
+        streaming_params.combine_ready = reinterpret_cast<uint32_t *>(combine_ready->data_ptr());
+    }
     tensorbridge::GemmParams params = {
             tensor_map_a, tensor_map_b, tensor_map_sfb, tensor_map_d,
             a_scale.data_ptr<float>(), global_scale.data_ptr<float>(), locks.data_ptr<int32_t>(),
@@ -376,7 +429,8 @@ at::Tensor launch_kernel_impl(
             static_cast<const int32_t *>(padded_ptr), static_cast<const uint8_t *>(activations_ptr), output_ptr,
             shape_m, num_routes, route_top_k, stream_k,
             static_cast<uint64_t>(a_scale.dim() == 3 ? a_scale.stride(0) :
-                                 kernel.num_experts ? m / kernel.num_experts * a_scale.stride(0) : 0)};
+                                 kernel.num_experts ? m / kernel.num_experts * a_scale.stride(0) : 0),
+            streaming_params};
     void *params_args[] = {&params};
 
     CUlaunchConfig launch = {};
@@ -423,10 +477,31 @@ at::Tensor launch_grouped_kernel(
                               sorted_ids, expert_ids, num_tokens_padded, expert_layout, top_k);
 }
 
+at::Tensor launch_streaming_grouped_kernel(
+    int64_t kernel_id, at::Tensor a, at::Tensor a_scale, at::Tensor b, at::Tensor sfb, at::Tensor global_scale,
+    at::Tensor locks, std::optional<at::Tensor> expert_counts, std::optional<at::Tensor> ready_ring,
+    std::optional<at::Tensor> write_head, std::optional<at::Tensor> dispatch_done,
+    std::optional<at::Tensor> work_cursor, std::optional<at::Tensor> tile_done_counts,
+    std::optional<at::Tensor> combine_ready, std::optional<at::Tensor> d, bool enable_pdl) {
+    return launch_kernel_impl(kernel_id, a, a_scale, b, sfb, global_scale, locks, d, enable_pdl, std::nullopt,
+                              std::nullopt, std::nullopt, expert_counts, 1, ready_ring, write_head, dispatch_done,
+                              work_cursor, tile_done_counts, combine_ready);
+}
+
+std::vector<int64_t> create_green_context_partition(int64_t device, int64_t min_comm_sms) {
+    return tensorbridge::green_ctx::create_partition(device, min_comm_sms);
+}
+
+void destroy_green_context_partition(int64_t partition_id) {
+    tensorbridge::green_ctx::destroy_partition(partition_id);
+}
+
 TORCH_LIBRARY(tensorbridge, m) {
     m.def("select_config(int m, int n, int k, int num_sms, int stream_k_override, int num_experts=0, int layout=0, "
           "bool group_scales=False) -> int[]");
     m.def("get_num_sms(int device) -> int");
+    m.def("create_green_context_partition(int device, int min_comm_sms) -> int[]");
+    m.def("destroy_green_context_partition(int partition_id) -> ()");
     m.def("autotune_candidates(int m, int n, int k, int num_sms, int count, int num_experts=0, int layout=0, "
           "bool group_scales=False) -> int[]");
     m.def("all_legal_configs(int m, int n, int k, int num_sms, bool check_clean=True, int num_experts=0, int layout=0, "
@@ -442,22 +517,29 @@ TORCH_LIBRARY(tensorbridge, m) {
     m.def("device_class_for(str device_name, int num_sms) -> str");
     m.def("register_kernel(str cubin_path, str func_name, int shape_n, int shape_k, int[] config, int smem_bytes, "
           "int num_experts=0, int layout=0, int activation_scale_groups=1, bool scale_m_major=False, "
-          "bool block_scales=False) -> int");
+          "bool block_scales=False, bool streaming=False, bool signal_done=False) -> int");
     m.def("launch_kernel(int kernel_id, Tensor a, Tensor a_scale, Tensor b, Tensor sfb, Tensor global_scale, "
           "Tensor locks, Tensor? d, bool enable_pdl=False) -> Tensor");
     m.def("launch_grouped_kernel(int kernel_id, Tensor a, Tensor a_scale, Tensor b, Tensor sfb, Tensor global_scale, "
           "Tensor locks, Tensor? sorted_ids, Tensor? expert_ids, Tensor? num_tokens_padded, Tensor? expert_layout, "
           "int top_k, Tensor? d=None, bool enable_pdl=False) -> Tensor");
+    m.def("launch_streaming_grouped_kernel(int kernel_id, Tensor a, Tensor a_scale, Tensor b, Tensor sfb, "
+          "Tensor global_scale, Tensor locks, Tensor? expert_counts=None, Tensor? ready_ring=None, "
+          "Tensor? write_head=None, Tensor? dispatch_done=None, Tensor? work_cursor=None, "
+          "Tensor? tile_done_counts=None, Tensor? combine_ready=None, Tensor? d=None, bool enable_pdl=False) -> Tensor");
 };
 
 TORCH_LIBRARY_IMPL(tensorbridge, CUDA, m) {
     m.impl("launch_kernel", &launch_kernel);
     m.impl("launch_grouped_kernel", &launch_grouped_kernel);
+    m.impl("launch_streaming_grouped_kernel", &launch_streaming_grouped_kernel);
 };
 
 TORCH_LIBRARY_IMPL(tensorbridge, Undefined, m) {
     m.impl("select_config", &select_config);
     m.impl("get_num_sms", &get_num_sms);
+    m.impl("create_green_context_partition", &create_green_context_partition);
+    m.impl("destroy_green_context_partition", &destroy_green_context_partition);
     m.impl("autotune_candidates", &autotune_candidates);
     m.impl("all_legal_configs", &all_legal_configs);
     m.impl("illegal_reason", &illegal_reason);

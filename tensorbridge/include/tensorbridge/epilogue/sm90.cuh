@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cute/arch/cluster_sm90.hpp>
 #include <cute/arch/copy_sm90.hpp>
 #include <cute/arch/copy_sm90_tma.hpp>
 #include <cute/arch/mma_sm90_gmma.hpp>
@@ -106,9 +107,40 @@ CUTLASS_DEVICE void zero_stream_k_tiles(Scheduler &scheduler, nv_bfloat16 *outpu
     }
 }
 
+// Route B reverse signaling: wait for this tile's stores to reach global memory, then atomically increment
+// the expert's finished tile count and release-signal `combine_ready[expert_id]` on the last tile.
+// - `kNeedSync`: true only when the caller did not already synchronize all math threads after direct `STG` stores.
+// - `kWaitTmaGlobal`: true when Warp 0 may have issued TMA bulk stores (`cp.async.bulk.wait_group 0` waits for
+//   global memory completion, unlike `cute::tma_store_wait<0>()` which only waits for SMEM reads).
+template <uint32_t kNumNBlocks, uint32_t kNumMathThreads, uint32_t kMathBarrier, bool kNeedSync = true,
+          bool kWaitTmaGlobal = true, class Storage>
+CUTLASS_DEVICE void signal_expert_tile_done(const GemmParams &params, const Storage &smem, uint32_t expert_id) {
+    if constexpr (kNeedSync) {
+        cutlass::arch::NamedBarrier::sync(kNumMathThreads, kMathBarrier);
+    }
+    // Warp-uniform guard so Warps 1..N exit with zero divergence; Warp 0 waits for its TMA stores
+    // (lanes 0..BLOCK_N/64-1 in `store_tma`) and uses SM90 `elect.sync` on the uniform datapath.
+    if (threadIdx.x / 32 == 0) {
+        if constexpr (kWaitTmaGlobal) {
+            ptx::tma_store_wait_global();
+            __syncwarp();
+        }
+        if (cute::elect_one_sync()) {
+            asm volatile("fence.acq_rel.gpu;\n" ::: "memory");
+            const uint32_t done = ptx::gmem_atomic_add_u32(params.streaming.tile_done_counts + expert_id, 1u) + 1u;
+            const uint32_t expected =
+                (smem.m_block_offsets[expert_id + 1] - smem.m_block_offsets[expert_id]) * kNumNBlocks;
+            if (done == expected) {
+                ptx::gmem_signal_release(params.streaming.combine_ready + expert_id, 1u);
+            }
+        }
+    }
+}
+
 // Scale, round to BF16 and store one tile of the per-token kernel
 template <uint32_t SHAPE_N, GroupedLayout kLayout, uint32_t kNumMathThreads, uint32_t kMathBarrier,
-          uint32_t kHalvesPerTile, uint32_t kNumSubTiles, uint32_t kNumAccum, class Storage, class Scheduler>
+          uint32_t kHalvesPerTile, bool kSignalDone = false, uint32_t kNumSubTiles, uint32_t kNumAccum, class Storage,
+          class Scheduler>
 CUTLASS_DEVICE void sm90_store_d(const GemmParams &params, Storage &smem, const Scheduler &scheduler,
                           const typename Scheduler::Tile &tile, uint32_t tile_count, float global_scale,
                           float (&accum)[kNumSubTiles][kNumAccum], uint32_t r_0) {
@@ -150,6 +182,10 @@ CUTLASS_DEVICE void sm90_store_d(const GemmParams &params, Storage &smem, const 
                 if (token < num_tokens) column[0] = rounded.x;
                 if (token + 1 < num_tokens) column[SHAPE_N] = rounded.y;
             }
+        }
+        if constexpr (kSignalDone) {
+            signal_expert_tile_done<SHAPE_N / BLOCK_N, kNumMathThreads, kMathBarrier, true, false>(
+                params, smem, tile.expert_id);
         }
         return;
     }
@@ -215,6 +251,10 @@ CUTLASS_DEVICE void sm90_store_d(const GemmParams &params, Storage &smem, const 
     // Stream-K: count this slice in, and release the row buffer
     if (!tile.is_full_depth() && threadIdx.x == 0) ptx::gmem_lock_increment(&params.locks[tile.lock_idx]);
     if constexpr (kIndexed) smem.rows_consumed[tile.route_buffer]->arrive();
+    if constexpr (kSignalDone) {
+        signal_expert_tile_done<SHAPE_N / BLOCK_N, kNumMathThreads, kMathBarrier, false, true>(
+            params, smem, tile.expert_id);
+    }
 }
 
 }  // namespace tensorbridge::epilogue

@@ -45,6 +45,19 @@ struct Routing<GroupedLayout::kIndexed, BLOCK_M, kNumExperts> {
 template <uint32_t BLOCK_M, uint32_t kNumExperts>
 struct Routing<GroupedLayout::kDense, BLOCK_M, kNumExperts> {};
 
+// Streaming masked overlap (Route B): 4-slot CTA-local tile handoff from TMA producer warp to math warpgroups.
+// Fixed 144 bytes (<= 12 * kNumExperts + 144 for all kNumExperts >= 0), so streaming never adds SMEM.
+struct StreamingRouting {
+    static constexpr uint32_t kQueueSlots = 4;
+    uint32_t expert_id[kQueueSlots];
+    uint32_t row_begin[kQueueSlots];
+    uint32_t row_end[kQueueSlots];
+    uint32_t n_block_idx[kQueueSlots];
+    uint32_t has_work[kQueueSlots];
+    alignas(8) BarrierWord tile_ready[kQueueSlots];
+    BarrierWord tile_consumed[kQueueSlots];
+};
+
 template <uint32_t BLOCK_M, uint32_t BLOCK_N, uint32_t BLOCK_K, uint32_t kNumStages>
 struct PtokenRing {
     static constexpr uint32_t kBlockM = BLOCK_M, kBlockN = BLOCK_N, kBlockK = BLOCK_K;
@@ -73,8 +86,10 @@ struct PtokenRing {
 };
 
 template <uint32_t BLOCK_M, uint32_t BLOCK_N, uint32_t BLOCK_K, uint32_t kNumStages, GroupedLayout kLayout,
-          uint32_t kNumExperts>
-struct PtokenStorage : PtokenRing<BLOCK_M, BLOCK_N, BLOCK_K, kNumStages>, Routing<kLayout, BLOCK_M, kNumExperts> {};
+          uint32_t kNumExperts, bool kStreaming = false>
+struct PtokenStorage
+    : PtokenRing<BLOCK_M, BLOCK_N, BLOCK_K, kNumStages>,
+      cute::conditional_t<kStreaming, StreamingRouting, Routing<kLayout, BLOCK_M, kNumExperts>> {};
 
 template <uint32_t BLOCK_M, uint32_t BLOCK_N, uint32_t kNumStages>
 struct PgroupRing {
@@ -99,7 +114,9 @@ struct PgroupRing {
 };
 
 template <uint32_t BLOCK_M, uint32_t BLOCK_N, uint32_t kNumStages,
-          GroupedLayout kLayout = GroupedLayout::kDense, uint32_t kNumExperts = 0>
-struct PgroupStorage : PgroupRing<BLOCK_M, BLOCK_N, kNumStages>, Routing<kLayout, BLOCK_M, kNumExperts> {};
+          GroupedLayout kLayout = GroupedLayout::kDense, uint32_t kNumExperts = 0, bool kStreaming = false>
+struct PgroupStorage
+    : PgroupRing<BLOCK_M, BLOCK_N, kNumStages>,
+      cute::conditional_t<kStreaming, StreamingRouting, Routing<kLayout, BLOCK_M, kNumExperts>> {};
 
 }  // namespace tensorbridge::layout
