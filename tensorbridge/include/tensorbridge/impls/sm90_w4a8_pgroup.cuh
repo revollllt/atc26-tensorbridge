@@ -22,7 +22,7 @@ template <uint32_t SHAPE_N, uint32_t SHAPE_K, uint32_t OUTPUT_N, uint32_t BLOCK_
           uint32_t kNumStages, uint32_t kNumCtasPerSm, uint32_t kNumMathWarpgroups, bool kUseStreamK,
           bool kMFastTileOrder, bool kScaleMMajor, bool kExactBridge,
           GroupedLayout kLayout = GroupedLayout::kDense, uint32_t kNumExperts = 0,
-          bool kStreaming = false, bool kSignalDone = false>
+          bool kFuseSwiGluFp8 = false>
 __global__ __launch_bounds__(128 * (kNumMathWarpgroups + 1), kNumCtasPerSm) void sm90_w4a8_pgroup(
     const __grid_constant__ GemmParams params) {
     // Shape checks
@@ -35,14 +35,14 @@ __global__ __launch_bounds__(128 * (kNumMathWarpgroups + 1), kNumCtasPerSm) void
     static_assert(kNumCtasPerSm >= 1 && kNumCtasPerSm <= (kNumMathWarpgroups == 2 ? 2 : 4), "Invalid CTAs per SM");
     static_assert(kNumMathWarpgroups == 2 || kNumCtasPerSm >= 2, "One math warp group exceeds 256 registers per thread");
     static_assert(kNumStages >= 3 && kNumStages <= 32, "Too few stages to overlap loads, or too many barriers");
-    static_assert(!kStreaming || kLayout == GroupedLayout::kMasked, "Streaming overlap requires masked layout");
-    static_assert(!kSignalDone || (kLayout == GroupedLayout::kMasked && !kStreaming),
-                  "Reverse combine signaling applies to non-streaming masked kernels");
+    static_assert(!kFuseSwiGluFp8 || (BLOCK_N == 256 && SHAPE_N % 256 == 0 && OUTPUT_N % 256 == 0 &&
+                                      kLayout != GroupedLayout::kIndexed && !kUseStreamK),
+                  "Fused SwiGLU+FP8 epilogue requires BLOCK_N==256, OUTPUT_N%256==0, non-indexed, non-Stream-K");
 
     // Types
     constexpr uint32_t BLOCK_K = 128;
     using WGMMA = typename mma::sm90::FP8RSMMASelector<BLOCK_M>::type;
-    using Storage = layout::PgroupStorage<BLOCK_M, BLOCK_N, kNumStages, kLayout, kNumExperts, kStreaming>;
+    using Storage = layout::PgroupStorage<BLOCK_M, BLOCK_N, kNumStages, kLayout, kNumExperts>;
     constexpr bool kIndexed = kLayout == GroupedLayout::kIndexed;
     constexpr bool kGrouped = kLayout != GroupedLayout::kDense;
     static_assert(!kGrouped || !kUseStreamK, "Grouped kernels do not split K");
@@ -59,7 +59,7 @@ __global__ __launch_bounds__(128 * (kNumMathWarpgroups + 1), kNumCtasPerSm) void
     // batch, so that the next K block's dequantization follows the promotion and the compiler schedules the two
     // together; on smaller tiles the dequantization runs between the WGMMAs
     constexpr bool kBatchMMA = BLOCK_M * kNumSubTiles > 128;
-    constexpr bool kLookAhead = kGrouped && !kIndexed && !kStreaming;
+    constexpr bool kLookAhead = kGrouped && !kIndexed;
     constexpr bool kUseRingDescs = kGrouped && !kIndexed && (kNumCtasPerSm >= 2 || BLOCK_M < 64);
     constexpr uint32_t kTmaBytesPerStage = BLOCK_M * 128 + kTilesN * (Storage::kTileBytesB + Storage::kTileBytesSFB);
     constexpr uint32_t kMathBarrier = 1;
@@ -79,26 +79,28 @@ __global__ __launch_bounds__(128 * (kNumMathWarpgroups + 1), kNumCtasPerSm) void
 
     // Block scheduler
     auto scheduler = sched::make_scheduler<SHAPE_N, SHAPE_K, BLOCK_M, BLOCK_N, BLOCK_K, kMFastTileOrder, kUseStreamK,
-                                           false, kLayout, kNumExperts, kStreaming>(params, smem);
+                                           false, kLayout, kNumExperts>(params, smem);
     using Tile = typename decltype(scheduler)::Tile;
     Tile tile;
 
     // Load the routing, overlapped with the barrier initialization
-    if constexpr (kGrouped && !kStreaming) {
+    if constexpr (kGrouped) {
         if (warp_idx == kNumMathThreads / 32 + 1) {
             cudaGridDependencySynchronize();
             scheduler.load_routing(params.expert_offsets, params.expert_counts, params.num_tokens_padded);
         }
     }
 
-    if (threadIdx.x == kNumMathThreads) {
+    if (warp_idx == kNumMathThreads / 32 && cute::elect_one_sync()) {
         // Prefetch TMA descriptors at the very beginning
         if constexpr (!kIndexed) {
             cute::prefetch_tma_descriptor(reinterpret_cast<const cute::TmaDescriptor *>(&params.tensor_map_a));
         }
         cute::prefetch_tma_descriptor(reinterpret_cast<const cute::TmaDescriptor *>(&params.tensor_map_b));
         cute::prefetch_tma_descriptor(reinterpret_cast<const cute::TmaDescriptor *>(&params.tensor_map_sfb));
-        cute::prefetch_tma_descriptor(reinterpret_cast<const cute::TmaDescriptor *>(&params.tensor_map_d));
+        if constexpr (!kFuseSwiGluFp8) {
+            cute::prefetch_tma_descriptor(reinterpret_cast<const cute::TmaDescriptor *>(&params.tensor_map_d));
+        }
 
         // Initialize barriers
         for (uint32_t s = 0; s < kNumStages; s++) {
@@ -106,9 +108,7 @@ __global__ __launch_bounds__(128 * (kNumMathWarpgroups + 1), kNumCtasPerSm) void
             smem.empty_barriers[s]->init(kNumMathThreads / 32);
         }
 
-        if constexpr (kStreaming) {
-            scheduler.init_barriers(kNumMathThreads);
-        } else if constexpr (kGrouped) {
+        if constexpr (kGrouped) {
             smem.routing_ready->init(kIndexed ? 1 : 32);
         } else {}
         if constexpr (kIndexed) {
@@ -136,22 +136,17 @@ __global__ __launch_bounds__(128 * (kNumMathWarpgroups + 1), kNumCtasPerSm) void
 
     if (warp_idx >= kNumMathThreads / 32) {
         const uint32_t tma_warp_idx = warp_idx - kNumMathThreads / 32;
-        if constexpr (kGrouped && !kStreaming) {
+        if constexpr (kGrouped) {
             if (tma_warp_idx == 1) scheduler.prepare();
         }
         // TMA warp-group for loading data
         cutlass::arch::warpgroup_reg_dealloc<kNumTMARegisters>();
         if (tma_warp_idx == 0) {
             // TMA warp
-            if constexpr (kStreaming) cudaGridDependencySynchronize();
             scheduler.wait_ready();
             uint32_t capacity = 0;
             if constexpr (kLayout == GroupedLayout::kMasked) capacity = params.shape_m / kNumExperts;
-            auto next_producer_tile = [&](Tile &t) {
-                if constexpr (kStreaming) return scheduler.get_next_block_producer(t);
-                else return scheduler.get_next_block(t);
-            };
-            while (next_producer_tile(tile)) {
+            while (scheduler.get_next_block(tile)) {
                 const uint32_t m_idx = tile.row_begin;
                 uint64_t tile_sfa_base = 0;
                 if constexpr (!kIndexed) {
@@ -171,7 +166,7 @@ __global__ __launch_bounds__(128 * (kNumMathWarpgroups + 1), kNumCtasPerSm) void
                     const uint32_t k_block_idx = tile.k_block_idx + k_block;
 
                     // Issue TMA
-                    if (lane_idx == 0) {
+                    if (cute::elect_one_sync()) {
                         if constexpr (!kIndexed) g2s::load_activations(params, smem, stage_idx, k_block_idx, m_idx);
                         else {}
                         g2s::load_weights<SHAPE_N, SHAPE_K>(params, smem, stage_idx, k_block_idx, tile.n_block_idx, tile.expert_id);
@@ -395,85 +390,84 @@ __global__ __launch_bounds__(128 * (kNumMathWarpgroups + 1), kNumCtasPerSm) void
                 }
 
                 // Release this stage
-                if (lane_idx == 0) smem.empty_barriers[stage]->arrive();
+                if (cute::elect_one_sync()) smem.empty_barriers[stage]->arrive();
                 __syncwarp();
                 if constexpr (!kBatchMMA) {
                     if (has_next_k_block) dequant(0);
                 }
             });
 
-            // Scale by the global scale, round to BF16 and store the tile
-            const uint32_t m_idx = tile.row_begin, n_idx = tile.n_block_idx * BLOCK_N;
-            const uint32_t num_tokens = min(tile.row_end - tile.row_begin, BLOCK_M);
-            constexpr bool kStorePartialFromRegs = kGrouped && !kIndexed && BLOCK_M == 8;
-            if (kStorePartialFromRegs && num_tokens < BLOCK_M) {
-                auto *output = static_cast<nv_bfloat16 *>(params.d);
-                const uint32_t token = 2 * (lane_idx % 4);
-                for (uint32_t i = 0; i < kNumSubTiles; i++) {
-                    for (uint32_t r = 0; r < 2; r++) {
-                        const nv_bfloat162 rounded = __float22bfloat162_rn(make_float2(
-                            final_accum[i][2 * r] * global_scale, final_accum[i][2 * r + 1] * global_scale));
-                        nv_bfloat16 *column = output + static_cast<uint64_t>(m_idx + token) * OUTPUT_N + n_idx +
-                                              (i / kHalvesPerTile) * 128 + (i % kHalvesPerTile) * 64 + r_0 + 8 * r;
-                        if (token < num_tokens) column[0] = rounded.x;
-                        if (token + 1 < num_tokens) column[OUTPUT_N] = rounded.y;
-                    }
-                }
-                if constexpr (kSignalDone) {
-                    epilogue::signal_expert_tile_done<SHAPE_N / BLOCK_N, kNumMathThreads, kMathBarrier, true, false>(
-                        params, smem, tile.expert_id);
-                }
+            // Scale by the global scale, round to BF16 and store the tile (or fuse SwiGLU + group-128 FP8 quant).
+            if constexpr (kFuseSwiGluFp8) {
+                epilogue::store_swiglu_fp8_g128<OUTPUT_N, BLOCK_M, kNumMathThreads, kMathBarrier, kHalvesPerTile>(
+                    params, smem, tile, global_scale, final_accum, r_0);
             } else {
-                float2 token_scales[kOutputRows / 8];
-                for (uint32_t group = 0; group < kOutputRows / 8; group++) {
-                    token_scales[group] = make_float2(global_scale, global_scale);
-                }
-                const auto *smem_d = reinterpret_cast<const int4 *>(smem.d);
-                for (uint32_t chunk = 0; chunk < BLOCK_M / kOutputRows; chunk++) {
-                    // Wait last TMA store to be finished
-                    cute::tma_store_wait<0>();
-                    cutlass::arch::NamedBarrier::sync(kNumMathThreads, kMathBarrier);
-
-                    // Stream-K: wait for the tile to be zeroed
-                    if (chunk == 0 && !tile.is_full_depth()) {
-                        ptx::gmem_lock_acquire<kNumMathThreads, kMathBarrier>(&params.locks[tile.lock_idx], -1);
-                    }
-
-                    // Write to shared memory
+                const uint32_t m_idx = tile.row_begin, n_idx = tile.n_block_idx * BLOCK_N;
+                const uint32_t num_tokens = min(tile.row_end - tile.row_begin, BLOCK_M);
+                constexpr bool kStorePartialFromRegs = kGrouped && !kIndexed && BLOCK_M == 8;
+                if (kStorePartialFromRegs && num_tokens < BLOCK_M) {
+                    auto *output = static_cast<nv_bfloat16 *>(params.d);
+                    const uint32_t token = 2 * (lane_idx % 4);
                     for (uint32_t i = 0; i < kNumSubTiles; i++) {
-                        auto *box = reinterpret_cast<nv_bfloat16 *>(smem.d[i / kHalvesPerTile]) +
-                                    (i % kHalvesPerTile) * kOutputRows * 64;
-                        epilogue::write_stsm<kOutputRows>(box, final_accum[i], token_scales, chunk);
+                        for (uint32_t r = 0; r < 2; r++) {
+                            const nv_bfloat162 rounded = __float22bfloat162_rn(make_float2(
+                                final_accum[i][2 * r] * global_scale, final_accum[i][2 * r + 1] * global_scale));
+                            nv_bfloat16 *column = output + static_cast<uint64_t>(m_idx + token) * OUTPUT_N + n_idx +
+                                                  (i / kHalvesPerTile) * 128 + (i % kHalvesPerTile) * 64 + r_0 + 8 * r;
+                            if (token < num_tokens) column[0] = rounded.x;
+                            if (token + 1 < num_tokens) column[OUTPUT_N] = rounded.y;
+                        }
+                    }
+                } else {
+                    float2 token_scales[kOutputRows / 8];
+                    for (uint32_t group = 0; group < kOutputRows / 8; group++) {
+                        token_scales[group] = make_float2(global_scale, global_scale);
+                    }
+                    const auto *smem_d = reinterpret_cast<const int4 *>(smem.d);
+                    for (uint32_t chunk = 0; chunk < BLOCK_M / kOutputRows; chunk++) {
+                        // Wait last TMA store to be finished
+                        cute::tma_store_wait<0>();
+                        cutlass::arch::NamedBarrier::sync(kNumMathThreads, kMathBarrier);
+
+                        // Stream-K: wait for the tile to be zeroed
+                        if (chunk == 0 && !tile.is_full_depth()) {
+                            ptx::gmem_lock_acquire<kNumMathThreads, kMathBarrier>(&params.locks[tile.lock_idx], -1);
+                        }
+
+                        // Write to shared memory
+                        for (uint32_t i = 0; i < kNumSubTiles; i++) {
+                            auto *box = reinterpret_cast<nv_bfloat16 *>(smem.d[i / kHalvesPerTile]) +
+                                        (i % kHalvesPerTile) * kOutputRows * 64;
+                            epilogue::write_stsm<kOutputRows>(box, final_accum[i], token_scales, chunk);
+                        }
+                        cutlass::arch::NamedBarrier::sync(kNumMathThreads, kMathBarrier);
+
+                        // Store to global memory
+                        if constexpr (kIndexed) {
+                            epilogue::store_rows<OUTPUT_N, BLOCK_N, kOutputRows, kNumMathThreads>(
+                                smem_d, static_cast<nv_bfloat16 *>(params.d), smem.row_ids[tile.route_buffer], 0, n_idx,
+                                params.num_routes, chunk);
+                        } else if constexpr (kGrouped) {
+                            if (num_tokens == BLOCK_M) {
+                                cute::tma_store_fence();
+                                epilogue::store_tma<BLOCK_N, kOutputRows>(smem_d, &params.tensor_map_d, m_idx, n_idx, false,
+                                                                          chunk);
+                            } else {
+                                epilogue::store_rows<OUTPUT_N, BLOCK_N, kOutputRows, kNumMathThreads>(
+                                    smem_d, static_cast<nv_bfloat16 *>(params.d), nullptr, m_idx, n_idx, num_tokens, chunk);
+                            }
+                        } else {
+                            cute::tma_store_fence();
+                            epilogue::store_tma<BLOCK_N, kOutputRows>(smem_d, &params.tensor_map_d, m_idx, n_idx,
+                                                                      !tile.is_full_depth(), chunk);
+                        }
                     }
                     cutlass::arch::NamedBarrier::sync(kNumMathThreads, kMathBarrier);
-
-                    // Store to global memory
-                    if constexpr (kIndexed) {
-                        epilogue::store_rows<OUTPUT_N, BLOCK_N, kOutputRows, kNumMathThreads>(
-                            smem_d, static_cast<nv_bfloat16 *>(params.d), smem.row_ids[tile.route_buffer], 0, n_idx,
-                            params.num_routes, chunk);
-                    } else if constexpr (kGrouped) {
-                        if (num_tokens == BLOCK_M) {
-                            cute::tma_store_fence();
-                            epilogue::store_tma<BLOCK_N, kOutputRows>(smem_d, &params.tensor_map_d, m_idx, n_idx, false,
-                                                                      chunk);
-                        } else {
-                            epilogue::store_rows<OUTPUT_N, BLOCK_N, kOutputRows, kNumMathThreads>(
-                                smem_d, static_cast<nv_bfloat16 *>(params.d), nullptr, m_idx, n_idx, num_tokens, chunk);
-                        }
-                    } else {
-                        cute::tma_store_fence();
-                        epilogue::store_tma<BLOCK_N, kOutputRows>(smem_d, &params.tensor_map_d, m_idx, n_idx,
-                                                                  !tile.is_full_depth(), chunk);
+                    if (!tile.is_full_depth() && warp_idx == 0 && cute::elect_one_sync()) {
+                        ptx::gmem_lock_increment(&params.locks[tile.lock_idx]);
                     }
-                }
-                cutlass::arch::NamedBarrier::sync(kNumMathThreads, kMathBarrier);
-                if (!tile.is_full_depth() && threadIdx.x == 0) ptx::gmem_lock_increment(&params.locks[tile.lock_idx]);
-                if constexpr (kIndexed) smem.rows_consumed[tile.route_buffer]->arrive();
-                else {}
-                if constexpr (kSignalDone) {
-                    epilogue::signal_expert_tile_done<SHAPE_N / BLOCK_N, kNumMathThreads, kMathBarrier, false, true>(
-                        params, smem, tile.expert_id);
+                    if constexpr (kIndexed) smem.rows_consumed[tile.route_buffer]->arrive();
+                    else {}
                 }
             }
             if constexpr (!kLookAhead) has_next = scheduler.get_next_block(next_tile);

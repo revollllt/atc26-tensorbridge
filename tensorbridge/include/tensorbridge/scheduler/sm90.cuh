@@ -197,7 +197,7 @@ public:
     CUTLASS_DEVICE void load_routing(const int64_t *offsets, const int32_t *counts, const int32_t *num_tokens_padded) {
         const uint32_t lane_idx = threadIdx.x % 32;
         if constexpr (kLayout == GroupedLayout::kIndexed) {
-            if (lane_idx == 0) {
+            if (cute::elect_one_sync()) {
                 ptx::cp_async_load_pred(reinterpret_cast<const uint32_t *>(num_tokens_padded), &routing.num_m_blocks, true);
             }
         } else {
@@ -220,7 +220,7 @@ public:
         const uint32_t lane_idx = threadIdx.x % 32;
         cute::cp_async_wait<0>();
         if constexpr (kLayout == GroupedLayout::kIndexed) {
-            if (lane_idx != 0) return;
+            if (!cute::elect_one_sync()) return;
             routing.num_m_blocks = math::ceil_div(routing.num_m_blocks, BLOCK_M);
             routing.routing_ready->arrive();
         } else {
@@ -290,142 +290,21 @@ public:
     }
 };
 
-// Dynamic lock-free ready-ring scheduler for Route B (GC-MoE masked streaming overlap).
-// The TMA producer warp steals `(ready_idx, n_block_idx)` work items via `work_cursor`, polls `write_head`
-// with acquire semantics + nanosleep backoff, and hands frozen `{expert_id, row_begin, row_end, n_block_idx}`
-// descriptors to the CTA's math warpgroups through a 4-slot SMEM ring. O(1) wakeup for any E_local (e.g. 112).
-template <uint32_t SHAPE_N, uint32_t SHAPE_K, uint32_t BLOCK_M, uint32_t BLOCK_N, uint32_t BLOCK_K,
-          uint32_t kNumExperts>
-class StreamingMaskedScheduler {
-    static_assert(kNumExperts > 0, "StreamingMaskedScheduler needs experts");
-    static constexpr uint32_t kNumNBlocks = SHAPE_N / BLOCK_N;
-    using Storage = layout::StreamingRouting;
-
-    const GemmParams &params;
-    Storage &routing;
-    uint32_t queue_seq = 0;
-
-public:
-    struct Tile {
-        uint32_t m_block_idx, n_block_idx, expert_id, row_begin, row_end, route_buffer;
-        static constexpr uint32_t k_block_idx = 0, num_k_blocks = SHAPE_K / BLOCK_K;
-        static constexpr uint32_t slice_id = 0, slice_count = 1, lock_idx = 0;
-        static constexpr bool is_full_depth() { return true; }
-    };
-
-    CUTLASS_DEVICE StreamingMaskedScheduler(const GemmParams &params, Storage &routing)
-        : params(params), routing(routing) {}
-
-    CUTLASS_DEVICE void init_barriers(uint32_t num_math_threads) {
-        for (uint32_t s = 0; s < Storage::kQueueSlots; s++) {
-            routing.tile_ready[s]->init(1);
-            routing.tile_consumed[s]->init(num_math_threads);
-        }
-    }
-
-    CUTLASS_DEVICE void load_routing(const int64_t *, const int32_t *, const int32_t *) {}
-    CUTLASS_DEVICE void prepare() {}
-    CUTLASS_DEVICE void wait_ready() {}
-
-    // Called exclusively by the TMA producer warp (`tma_warp_idx == 0`).
-    CUTLASS_DEVICE bool get_next_block_producer(Tile &tile) {
-        const uint32_t slot = queue_seq % Storage::kQueueSlots;
-        const uint32_t q_phase = (queue_seq / Storage::kQueueSlots) & 1;
-        queue_seq++;
-        if (cute::elect_one_sync()) {
-            routing.tile_consumed[slot]->wait(q_phase ^ 1);
-            const uint32_t work_id = ptx::gmem_atomic_add_u32(params.streaming.work_cursor, 1u);
-            const uint32_t ready_idx = work_id / kNumNBlocks;
-            const uint32_t n_block_idx = work_id % kNumNBlocks;
-            uint32_t has_work = 0, expert_id = 0, row_begin = 0, row_end = 0;
-            while (true) {
-                if (ready_idx < ptx::ld_acquire_gpu_u32(params.streaming.write_head)) {
-                    ptx::async_proxy_fence_global();
-                    const StreamingTile st = params.streaming.ready_ring[ready_idx];
-                    expert_id = st.expert_id;
-                    row_begin = st.row_begin;
-                    row_end = st.row_end;
-                    has_work = 1u;
-                    break;
-                }
-                if (ptx::ld_acquire_gpu_u32(params.streaming.dispatch_done) != 0u) {
-                    if (ready_idx < ptx::ld_acquire_gpu_u32(params.streaming.write_head)) {
-                        ptx::async_proxy_fence_global();
-                        const StreamingTile st = params.streaming.ready_ring[ready_idx];
-                        expert_id = st.expert_id;
-                        row_begin = st.row_begin;
-                        row_end = st.row_end;
-                        has_work = 1u;
-                        break;
-                    }
-                    has_work = 0u;
-                    break;
-                }
-                ptx::nanosleep_ns(64u);
-            }
-            routing.expert_id[slot] = expert_id;
-            routing.row_begin[slot] = row_begin;
-            routing.row_end[slot] = row_end;
-            routing.n_block_idx[slot] = n_block_idx;
-            routing.has_work[slot] = has_work;
-            routing.tile_ready[slot]->arrive();
-        }
-        // Warp-wide sync propagates the elected lane's `ld.acquire.gpu` happens-before to all 32 lanes
-        // before they read `routing.*` and issue `cp.async` loads of `params.sfa`.
-        __syncwarp();
-        if (!routing.has_work[slot]) return false;
-        tile.expert_id = routing.expert_id[slot];
-        tile.row_begin = routing.row_begin[slot];
-        tile.row_end = routing.row_end[slot];
-        tile.n_block_idx = routing.n_block_idx[slot];
-        tile.m_block_idx = 0;
-        tile.route_buffer = 0;
-        return true;
-    }
-
-    // Called by all math warpgroup threads in lockstep.
-    CUTLASS_DEVICE bool get_next_block_consumer(Tile &tile) {
-        const uint32_t slot = queue_seq % Storage::kQueueSlots;
-        const uint32_t q_phase = (queue_seq / Storage::kQueueSlots) & 1;
-        queue_seq++;
-        routing.tile_ready[slot]->wait(q_phase);
-        const uint32_t has_work = routing.has_work[slot];
-        if (!has_work) {
-            routing.tile_consumed[slot]->arrive();
-            return false;
-        }
-        tile.expert_id = routing.expert_id[slot];
-        tile.row_begin = routing.row_begin[slot];
-        tile.row_end = routing.row_end[slot];
-        tile.n_block_idx = routing.n_block_idx[slot];
-        tile.m_block_idx = 0;
-        tile.route_buffer = 0;
-        routing.tile_consumed[slot]->arrive();
-        return true;
-    }
-
-    CUTLASS_DEVICE bool get_next_block(Tile &tile) { return get_next_block_consumer(tile); }
-};
-
 template <uint32_t SHAPE_N, uint32_t SHAPE_K, uint32_t BLOCK_M, uint32_t BLOCK_N, uint32_t BLOCK_K, bool kMFastTileOrder,
-          bool kUseStreamK, bool kAlignedSlices, GroupedLayout kLayout, uint32_t kNumExperts, bool kStreaming = false>
+          bool kUseStreamK, bool kAlignedSlices, GroupedLayout kLayout, uint32_t kNumExperts>
 using Scheduler = cute::conditional_t<
-    kStreaming,
-    StreamingMaskedScheduler<SHAPE_N, SHAPE_K, BLOCK_M, BLOCK_N, BLOCK_K, kNumExperts>,
-    cute::conditional_t<
-        kLayout != GroupedLayout::kDense,
-        GroupedScheduler<SHAPE_N, SHAPE_K, BLOCK_M, BLOCK_N, BLOCK_K, kMFastTileOrder, kLayout, kNumExperts>,
-        cute::conditional_t<kUseStreamK,
-                            StreamKScheduler<SHAPE_N, SHAPE_K, BLOCK_M, BLOCK_N, BLOCK_K, kMFastTileOrder, kAlignedSlices>,
-                            DataParallelScheduler<SHAPE_N, SHAPE_K, BLOCK_M, BLOCK_N, BLOCK_K, kMFastTileOrder>>>>;
+    kLayout != GroupedLayout::kDense,
+    GroupedScheduler<SHAPE_N, SHAPE_K, BLOCK_M, BLOCK_N, BLOCK_K, kMFastTileOrder, kLayout, kNumExperts>,
+    cute::conditional_t<kUseStreamK,
+                        StreamKScheduler<SHAPE_N, SHAPE_K, BLOCK_M, BLOCK_N, BLOCK_K, kMFastTileOrder, kAlignedSlices>,
+                        DataParallelScheduler<SHAPE_N, SHAPE_K, BLOCK_M, BLOCK_N, BLOCK_K, kMFastTileOrder>>>;
 
 // NOTES: constructed directly in a kernel, NVRTC addresses the grouped routing with generic loads and stores
 template <uint32_t SHAPE_N, uint32_t SHAPE_K, uint32_t BLOCK_M, uint32_t BLOCK_N, uint32_t BLOCK_K, bool kMFastTileOrder,
-          bool kUseStreamK, bool kAlignedSlices, GroupedLayout kLayout, uint32_t kNumExperts, bool kStreaming = false,
-          class Storage>
+          bool kUseStreamK, bool kAlignedSlices, GroupedLayout kLayout, uint32_t kNumExperts, class Storage>
 CUTLASS_DEVICE auto make_scheduler(const GemmParams &params, Storage &smem) {
     return Scheduler<SHAPE_N, SHAPE_K, BLOCK_M, BLOCK_N, BLOCK_K, kMFastTileOrder, kUseStreamK, kAlignedSlices, kLayout,
-                     kNumExperts, kStreaming>(params, smem);
+                     kNumExperts>(params, smem);
 }
 
 }  // namespace tensorbridge::sched

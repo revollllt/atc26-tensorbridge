@@ -21,18 +21,6 @@ struct DriverApi {
     PFN_cuTensorMapEncodeTiled_v12000 cuTensorMapEncodeTiled;
 };
 
-// CUDA 12.4 / 12.5 Green Context entry points are loaded lazily so non-Green-Context GEMMs continue
-// to work on older drivers that lack `cuGreenCtxStreamCreate` (CUDA 12.5).
-struct GreenCtxDriverApi {
-    PFN_cuDeviceGetDevResource_v12040 cuDeviceGetDevResource;
-    PFN_cuDevSmResourceSplitByCount_v12040 cuDevSmResourceSplitByCount;
-    PFN_cuDevResourceGenerateDesc_v12040 cuDevResourceGenerateDesc;
-    PFN_cuGreenCtxCreate_v12040 cuGreenCtxCreate;
-    PFN_cuGreenCtxStreamCreate_v12050 cuGreenCtxStreamCreate;
-    PFN_cuGreenCtxDestroy_v12040 cuGreenCtxDestroy;
-    PFN_cuStreamDestroy_v4000 cuStreamDestroy;
-};
-
 template <typename FnPtr>
 inline void load_driver_symbol(FnPtr &func, const char *symbol, unsigned int cuda_version) {
     cudaDriverEntryPointQueryResult status;
@@ -55,21 +43,6 @@ inline const DriverApi &driver() {
         load_driver_symbol(api.cuFuncSetAttribute, "cuFuncSetAttribute", 9000);
         load_driver_symbol(api.cuLaunchKernelEx, "cuLaunchKernelEx", 11060);
         load_driver_symbol(api.cuTensorMapEncodeTiled, "cuTensorMapEncodeTiled", 12000);
-        return api;
-    }();
-    return api;
-}
-
-inline const GreenCtxDriverApi &green_ctx_driver() {
-    static const GreenCtxDriverApi api = [] {
-        GreenCtxDriverApi api;
-        load_driver_symbol(api.cuDeviceGetDevResource, "cuDeviceGetDevResource", 12040);
-        load_driver_symbol(api.cuDevSmResourceSplitByCount, "cuDevSmResourceSplitByCount", 12040);
-        load_driver_symbol(api.cuDevResourceGenerateDesc, "cuDevResourceGenerateDesc", 12040);
-        load_driver_symbol(api.cuGreenCtxCreate, "cuGreenCtxCreate", 12040);
-        load_driver_symbol(api.cuGreenCtxStreamCreate, "cuGreenCtxStreamCreate", 12050);
-        load_driver_symbol(api.cuGreenCtxDestroy, "cuGreenCtxDestroy", 12040);
-        load_driver_symbol(api.cuStreamDestroy, "cuStreamDestroy", 4000);
         return api;
     }();
     return api;

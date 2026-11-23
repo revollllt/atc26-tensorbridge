@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cute/arch/cluster_sm90.hpp>
 #include <cutlass/arch/barrier.h>
 
 #include <tensorbridge/common/utils.cuh>
@@ -40,7 +41,7 @@ CUTLASS_DEVICE void cp_async_arrive(cutlass::arch::ClusterBarrier *barrier) {
 // Stream-K: spin until the lock word is at most `count`, then order this CTA's TMA accesses after it
 template <uint32_t kNumThreads, uint32_t kBarrierId>
 CUTLASS_DEVICE void gmem_lock_acquire(int32_t *lock, int32_t count) {
-    if (threadIdx.x == 0) {
+    if (threadIdx.x / 32 == 0 && cute::elect_one_sync()) {
         int32_t state = 1;
         do {
             asm volatile("ld.global.acquire.gpu.b32 %0, [%1];\n" : "=r"(state) : "l"(lock) : "memory");
@@ -61,8 +62,7 @@ CUTLASS_DEVICE void gmem_lock_increment(int32_t *lock) {
     asm volatile("red.relaxed.gpu.global.add.s32 [%0], %1;\n" ::"l"(lock), "r"(1) : "memory");
 }
 
-// Route B streaming overlap: GPU-scope acquire load, release store, atomic increment, TMA global completion wait,
-// and polite spin backoff.
+// GPU-scope acquire/release primitives, atomic increment, TMA global completion wait, and polite spin backoff.
 CUTLASS_DEVICE uint32_t ld_acquire_gpu_u32(const uint32_t *ptr) {
     uint32_t val;
     asm volatile("ld.global.acquire.gpu.b32 %0, [%1];\n" : "=r"(val) : "l"(ptr) : "memory");
@@ -71,6 +71,14 @@ CUTLASS_DEVICE uint32_t ld_acquire_gpu_u32(const uint32_t *ptr) {
 
 CUTLASS_DEVICE void gmem_signal_release(uint32_t *ptr, uint32_t value) {
     asm volatile("st.release.gpu.global.b32 [%0], %1;\n" ::"l"(ptr), "r"(value) : "memory");
+}
+
+CUTLASS_DEVICE void fence_acq_rel_gpu() {
+    asm volatile("fence.acq_rel.gpu;\n" ::: "memory");
+}
+
+CUTLASS_DEVICE void st_relaxed_gpu_u32(uint32_t *ptr, uint32_t value) {
+    asm volatile("st.relaxed.gpu.global.b32 [%0], %1;\n" ::"l"(ptr), "r"(value) : "memory");
 }
 
 CUTLASS_DEVICE uint32_t gmem_atomic_add_u32(uint32_t *ptr, uint32_t inc) {
@@ -91,6 +99,13 @@ CUTLASS_DEVICE void async_proxy_fence_global() {
 
 CUTLASS_DEVICE void nanosleep_ns(uint32_t ns) {
     asm volatile("nanosleep.u32 %0;\n" ::"r"(ns));
+}
+
+// Fused SwiGLU+FP8 epilogue: pack two FP32 values into two FP8 E4M3 bytes (lo in [7:0], hi in [15:8]).
+CUTLASS_DEVICE uint16_t cvt_f32x2_to_fp8_e4m3x2(float lo, float hi) {
+    uint16_t out;
+    asm("cvt.rn.satfinite.e4m3x2.f32 %0, %2, %1;\n" : "=h"(out) : "f"(lo), "f"(hi));
+    return out;
 }
 
 }  // namespace tensorbridge::ptx
