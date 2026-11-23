@@ -28,8 +28,11 @@ def load_launcher() -> Launcher:
     """Build and load `csrc/launcher`, which registers `torch.ops.tensorbridge`."""
     from tensorbridge.jit import compiler
 
-    # The launcher also compiles the kernels' argument struct (`include/tensorbridge/common/params.h`).
-    sources = sorted(CSRC_DIR.glob("**/*.[ch]pp")) + sorted(CSRC_DIR.glob("**/*.h")) + [compiler.PARAMS_HEADER]
+    # The launcher also compiles the kernels' argument structs (`params.h`, `megamoe_params.h`).
+    megamoe_params_header = compiler.PARAMS_HEADER.parent / "megamoe_params.h"
+    sources = sorted(CSRC_DIR.glob("**/*.[ch]pp")) + sorted(CSRC_DIR.glob("**/*.h")) + [
+        compiler.PARAMS_HEADER, megamoe_params_header,
+    ]
     # The checkout's path is part of the key: `torch.utils.cpp_extension` writes absolute source and include
     # paths into build.ninja, so checkouts sharing a build directory would rebuild it in turn.
     digest = hashlib.sha256(str(CSRC_DIR).encode() + b"".join(path.read_bytes() for path in sources)).hexdigest()[:16]
@@ -189,11 +192,11 @@ def get_kernel(
 def register_device_kernel(
     device: int, kernel: codegen.KernelSource, include_root: Path, n: int, k: int, config: GemmConfig,
     num_experts: int = 0, layout: codegen.GroupedLayout = "dense", activation_scale_groups: int = 1,
-    scale_m_major: bool = False, block_scales: bool = False, streaming: bool = False, signal_done: bool = False,
+    scale_m_major: bool = False, block_scales: bool = False, fuse_swiglu_fp8: bool = False,
 ) -> int:
     """Compile `kernel` against the headers under `include_root` and register it on `device` for the weight shape
     `(n, k)`; returns its id. `activation_scale_groups` and `scale_m_major` describe the activation scales the kernel
-    reads, `block_scales` the layout of its weight scales (`launcher.cpp`, `Kernel`)."""
+    reads, `block_scales` the layout of its weight scales (`launcher_gemm.hpp`, `Kernel`)."""
     from tensorbridge.jit import compiler
 
     load_launcher()
@@ -203,15 +206,19 @@ def register_device_kernel(
             # The selector only proposes configs that compiled without spilling (the census); this one did not.
             warnings.warn(f"{config} spills {compiled.ptxas.spill_bytes} bytes for (N, K) = ({n}, {k})",
                           RuntimeWarning, stacklevel=3)
+        optin = torch.cuda.get_device_properties(device).shared_memory_per_block_optin
+        if compiled.smem_bytes > optin:
+            raise ValueError(
+                f"{config} needs {compiled.smem_bytes} B of shared memory, exceeding device limit {optin} B"
+            )
         if config.ctas_per_sm > 1:
-            optin = torch.cuda.get_device_properties(device).shared_memory_per_block_optin
             if not ctas_fit(config.ctas_per_sm, compiled.smem_bytes, optin):
                 raise ValueError(f"{config} needs {compiled.smem_bytes} B of shared memory per CTA, too much for "
                                  f"{config.ctas_per_sm} CTAs per SM")
         return torch.ops.tensorbridge.register_kernel(
             compiled.cubin_path, compiled.lowered_name, n, k, config.to_list(),
             compiled.smem_bytes, num_experts, codegen.LAYOUT_IDS[layout], activation_scale_groups, scale_m_major,
-            block_scales, streaming, signal_done,
+            block_scales, fuse_swiglu_fp8,
         )
 
 
@@ -219,26 +226,60 @@ def get_grouped_kernel(
     n: int, k: int, num_experts: int, layout: codegen.GroupedLayout, config: GemmConfig,
     include_root: Path | None = None, bridge: codegen.Bridge = "exact", device: int | None = None,
     source: codegen.KernelSource | None = None, *, group_scales: bool = False,
-    streaming: bool = False, signal_done: bool = False,
+    fuse_swiglu_fp8: bool = False,
 ) -> int:
     """Compile a grouped specialization through the shared JIT and registration path."""
     if layout == "dense" or num_experts < 1:
         raise ValueError("a grouped kernel needs a grouped layout and at least one expert")
     if config.use_stream_k:
         raise ValueError("grouped GEMM does not support Stream-K")
+    if fuse_swiglu_fp8 and not group_scales:
+        raise ValueError("fuse_swiglu_fp8 is currently implemented for group_scales=True (pgroup) kernels")
     from tensorbridge.jit import compiler
 
     device = torch.cuda.current_device() if device is None else device
     if group_scales:
         kernel = source or codegen.generate_pgroup(
-            n, k, config, False, bridge, num_experts, layout, streaming=streaming, signal_done=signal_done,
+            n, k, config, False, bridge, num_experts, layout, fuse_swiglu_fp8=fuse_swiglu_fp8,
         )
         return register_device_kernel(device, kernel, include_root or compiler.INCLUDE_DIR, n, k, config,
-                                      num_experts, layout, k // 128, block_scales=True,
-                                      streaming=streaming, signal_done=signal_done)
+                                      num_experts, layout, codegen.pad_to_unit(k) // 128, block_scales=True,
+                                      fuse_swiglu_fp8=fuse_swiglu_fp8)
     else:
-        kernel = source or codegen.generate(
-            n, k, config, num_experts, layout, bridge, streaming=streaming, signal_done=signal_done,
-        )
+        kernel = source or codegen.generate(n, k, config, num_experts, layout, bridge)
         return register_device_kernel(device, kernel, include_root or compiler.INCLUDE_DIR, n, k, config,
-                                      num_experts, layout, streaming=streaming, signal_done=signal_done)
+                                      num_experts, layout)
+
+
+@functools.cache
+def get_megamoe_kernel(
+    n_gu: int, k_gu: int, n_dn: int, k_dn: int, num_experts: int,
+    block_m: int, num_stages: int, ctas_per_sm: int, math_warpgroups: int = 2,
+    bridge: codegen.Bridge = "exact", device: int | None = None,
+) -> int:
+    """Compile and register the persistent SM90 W4A8 MegaMoE kernel on `device`."""
+    from tensorbridge.jit import compiler
+
+    load_launcher()
+    dev = torch.cuda.current_device() if device is None else device
+    kernel = codegen.generate_megamoe(
+        n_gu, k_gu, n_dn, k_dn, num_experts, block_m, num_stages, ctas_per_sm, math_warpgroups, bridge,
+    )
+    with torch.cuda.device(dev):
+        compiled = compiler.build(kernel.source, kernel.name, compiler.INCLUDE_DIR)
+        if compiled.ptxas is not None and compiled.ptxas.spill_bytes:
+            warnings.warn(
+                f"MegaMoE(BM={block_m}, S={num_stages}, CTA={ctas_per_sm}, WG={math_warpgroups}) "
+                f"spills {compiled.ptxas.spill_bytes} bytes for gu=({n_gu},{k_gu}) dn=({n_dn},{k_dn})",
+                RuntimeWarning, stacklevel=2,
+            )
+        optin = torch.cuda.get_device_properties(dev).shared_memory_per_block_optin
+        if compiled.smem_bytes > optin or (ctas_per_sm > 1 and not ctas_fit(ctas_per_sm, compiled.smem_bytes, optin)):
+            raise ValueError(
+                f"MegaMoE(BM={block_m}, S={num_stages}, CTA={ctas_per_sm}) needs {compiled.smem_bytes} B SMEM per CTA, "
+                f"exceeding device limit ({optin} B)"
+            )
+        return torch.ops.tensorbridge.register_megamoe_kernel(
+            compiled.cubin_path, compiled.lowered_name, n_gu, k_gu, n_dn, k_dn, num_experts,
+            block_m, num_stages, ctas_per_sm, math_warpgroups, compiled.smem_bytes,
+        )

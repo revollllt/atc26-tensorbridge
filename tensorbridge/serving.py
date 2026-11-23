@@ -23,7 +23,7 @@ from typing import Literal, TypedDict
 
 import torch
 
-from tensorbridge import experimental
+from tensorbridge import experimental, megamoe
 from tensorbridge.gemm import ContiguousRouting, IndexedRouting, MaskedRouting, fp8_nvfp4_gemm, fp8_nvfp4_grouped_gemm
 from tensorbridge.jit import autotune, codegen, runtime
 from tensorbridge.jit.codegen import Bridge, GemmConfig
@@ -38,7 +38,7 @@ class DenseShape:
     n: int
     k: int
     bridge: Bridge
-    input_quant: fp8.InputQuant = "per_token"
+    input_quant: fp8.InputQuant = "group_128"
 
 
 @dataclasses.dataclass(frozen=True, order=True)
@@ -55,7 +55,8 @@ class GroupedShape:
     bridge: Bridge
     dispatch_ranks: int
     num_global_experts: int
-    input_quant: fp8.InputQuant = "per_token"
+    input_quant: fp8.InputQuant = "group_128"
+    fuse_swiglu_fp8: bool = False
 
 
 DenseTunedKey = tuple[int, int, int, int, int, Bridge] | tuple[int, int, int, int, int, Bridge, fp8.InputQuant]
@@ -73,6 +74,8 @@ prepared_grouped: set[GroupedShape] = set()
 tuned_grouped: set[tuple[GroupedShape, int, int]] = set()  # shape, available SMs, routed rows
 precompiled_dense: set[tuple[DenseShape, int, int]] = set()  # shape, available SMs, max_tokens
 precompiled_grouped: set[tuple[GroupedShape, int, int]] = set()  # shape, available SMs, max_tokens
+# Registered post-load precompile callbacks (e.g., NVLinkSymmetricEP kernels).
+precompile_hooks: list[Callable[[], None]] = []
 # Stream-isolated Stream-K lock arrays (`int32 [1024]`), keyed by `(device, cuda_stream)`.
 stream_locks: dict[tuple[int, int], torch.Tensor] = {}
 
@@ -136,7 +139,7 @@ def prepare_linear(
     scale_convention: Literal["inverse", "multiplier"] = "inverse",
     shard_sizes: Sequence[int] | None = None,
     *,
-    input_quant: fp8.InputQuant = "per_token",
+    input_quant: fp8.InputQuant = "group_128",
 ) -> nvfp4.NVFP4Weight:
     """The kernel layout of an NVFP4 linear layer, for the `bridge` table (the FPMA table for
     FPMA-aware checkpoints, the exact one for standard NVFP4 ones) and `input_quant` (`per_token`
@@ -214,22 +217,40 @@ def precompile_prepared(max_tokens: int) -> int:
                     + grouped_shape.num_global_experts - 1) // grouped_shape.num_global_experts)
             for m in dense_ms
         })
-        configs = dict.fromkeys(
-            runtime.select_config(row, grouped_shape.n, grouped_shape.k, grouped_shape.num_experts,
-                                  grouped_shape.layout, device=device, bridge=grouped_shape.bridge,
-                                  top_k=grouped_shape.input_top_k, group_scales=group_scales)
-            for row in rows
-        )
-        for config in configs:
-            source = (codegen.generate_pgroup(grouped_shape.n, grouped_shape.k, config, False, grouped_shape.bridge,
-                                              grouped_shape.num_experts, grouped_shape.layout)
-                      if group_scales else codegen.generate(grouped_shape.n, grouped_shape.k, config,
-                                                            grouped_shape.num_experts, grouped_shape.layout,
-                                                            grouped_shape.bridge))
-            sources.append(source)
-            grouped_targets.append((grouped_shape, config))
+        if grouped_shape.fuse_swiglu_fp8:
+            configs = dict.fromkeys(
+                megamoe.select_swiglu_config(
+                    row, grouped_shape.n, grouped_shape.k, grouped_shape.num_experts,
+                    grouped_shape.layout, device=device, bridge=grouped_shape.bridge,
+                )
+                for row in rows
+            )
+            for config in configs:
+                source = codegen.generate_pgroup(
+                    grouped_shape.n, grouped_shape.k, config, False, grouped_shape.bridge,
+                    grouped_shape.num_experts, grouped_shape.layout, fuse_swiglu_fp8=True,
+                )
+                sources.append(source)
+                grouped_targets.append((grouped_shape, config))
+        else:
+            configs = dict.fromkeys(
+                runtime.select_config(row, grouped_shape.n, grouped_shape.k, grouped_shape.num_experts,
+                                      grouped_shape.layout, device=device, bridge=grouped_shape.bridge,
+                                      top_k=grouped_shape.input_top_k, group_scales=group_scales)
+                for row in rows
+            )
+            for config in configs:
+                source = (codegen.generate_pgroup(grouped_shape.n, grouped_shape.k, config, False, grouped_shape.bridge,
+                                                  grouped_shape.num_experts, grouped_shape.layout)
+                          if group_scales else codegen.generate(grouped_shape.n, grouped_shape.k, config,
+                                                                grouped_shape.num_experts, grouped_shape.layout,
+                                                                grouped_shape.bridge))
+                sources.append(source)
+                grouped_targets.append((grouped_shape, config))
         precompiled_grouped.add((grouped_shape, num_sms, max_tokens))
 
+    for hook in precompile_hooks:
+        hook()
     if not sources:
         return 0
     compiled_before = autotune.stats.compiled
@@ -253,6 +274,7 @@ def precompile_prepared(max_tokens: int) -> int:
         runtime.get_grouped_kernel(
             grouped_shape.n, grouped_shape.k, grouped_shape.num_experts, grouped_shape.layout, config,
             bridge=grouped_shape.bridge, device=device, group_scales=grouped_shape.input_quant == "group_128",
+            fuse_swiglu_fp8=grouped_shape.fuse_swiglu_fp8,
         )
     return autotune.stats.compiled - compiled_before
 
@@ -355,7 +377,7 @@ def autotune_prepared(ms: Sequence[int]) -> None:
 
 def linear(
     x: torch.Tensor, weight: nvfp4.NVFP4Weight, output: torch.Tensor,
-    *, input_quant: fp8.InputQuant = "per_token",
+    *, input_quant: fp8.InputQuant = "group_128",
 ) -> None:
     """`output = x @ dequant(weight).T` for BF16 `x` `[M, K]` into BF16 `output` `[M, N]`, with
     `x` quantized to FP8 (`per_token` or `group_128`). Both quantizers release their dependent
@@ -396,9 +418,10 @@ class NVFP4MoE:
     dispatch_ranks: int
     layout: Literal["indexed", "contiguous", "masked"]
     configs: tuple[GemmConfig, GemmConfig] | None
-    gate_up_quant: fp8.InputQuant = "per_token"
-    down_quant: fp8.InputQuant = "per_token"
+    gate_up_quant: fp8.InputQuant = "group_128"
+    down_quant: fp8.InputQuant = "group_128"
     is_gated: bool = True
+    fuse_swiglu_fp8: bool = False
 
 
 class MoEBuffers(TypedDict):
@@ -423,8 +446,8 @@ def prepare_moe(
     bridge: Bridge = "exact", *, configs: tuple[GemmConfig, GemmConfig] | None = None,
     layout: Literal["indexed", "contiguous", "masked"] = "indexed",
     scale_convention: Literal["inverse", "multiplier"] = "inverse",
-    gate_up_quant: fp8.InputQuant = "per_token", down_quant: fp8.InputQuant = "per_token",
-    is_gated: bool = True, layer_name: str = "MoE",
+    gate_up_quant: fp8.InputQuant = "group_128", down_quant: fp8.InputQuant = "group_128",
+    is_gated: bool = True, fuse_swiglu_fp8: bool = False, layer_name: str = "MoE",
 ) -> NVFP4MoE:
     """Prepare NVFP4 experts after sharding. Global scales are `[E, 2]` (gated) or `[E, 1]` / `[E]`
     (non-gated) for w13 and `[E]` for down: compressed-tensors uses `inverse`, ModelOpt uses
@@ -454,12 +477,18 @@ def prepare_moe(
     experts, channels, width = w13.shape
     w13 = dataclasses.replace(w13, scale=(w13.scale.view(experts, width // 128, 8, channels)
                               .permute(0, 1, 3, 2).contiguous() if gate_up_quant == "group_128" else w13.scale))
+    if fuse_swiglu_fp8:
+        if not is_gated or gate_up_quant != "group_128" or down_quant != "group_128":
+            raise ValueError(
+                f"{layer_name}: fuse_swiglu_fp8 requires is_gated=True and group_128 for both gate_up and down"
+            )
+        w13 = nvfp4.interleave_gate_up_experts(w13)
     experts, channels, width = w2.shape
     w2 = dataclasses.replace(w2, scale=(w2.scale.view(experts, width // 128, 8, channels)
                              .permute(0, 1, 3, 2).contiguous() if down_quant == "group_128" else w2.scale))
     moe = NVFP4MoE(
         w13, w2, top_k, num_experts if num_global_experts is None else num_global_experts,
-        dispatch_ranks, layout, configs, gate_up_quant, down_quant, is_gated,
+        dispatch_ranks, layout, configs, gate_up_quant, down_quant, is_gated, fuse_swiglu_fp8,
     )
     if configs is None:
         prepared_grouped.update(moe_grouped_shapes(moe))
@@ -473,9 +502,10 @@ def moe_grouped_shapes(moe: NVFP4MoE) -> tuple[GroupedShape, GroupedShape]:
     _, n2, k2 = moe.w2.shape
     return (
         GroupedShape(device, n13, k13, experts, moe.top_k, moe.top_k if moe.layout == "indexed" else 1,
-                     moe.layout, moe.w13.bridge, moe.dispatch_ranks, moe.num_global_experts, moe.gate_up_quant),
+                     moe.layout, moe.w13.bridge, moe.dispatch_ranks, moe.num_global_experts, moe.gate_up_quant,
+                     moe.fuse_swiglu_fp8),
         GroupedShape(device, n2, k2, experts, moe.top_k, 1, moe.layout, moe.w2.bridge,
-                     moe.dispatch_ranks, moe.num_global_experts, moe.down_quant),
+                     moe.dispatch_ranks, moe.num_global_experts, moe.down_quant, False),
     )
 
 
@@ -624,37 +654,72 @@ def moe_forward_contiguous(
             inputs, scales = hidden_states, input_scale
             pdl_first = False
         else:
-            inputs, scales = fp8.scatter_fp8(hidden_states, input_scale, scatter_idx,
-                                             out=(buffers["input"], buffers["input_scale"]))
+            inputs, scales = fp8.scatter_fp8(
+                hidden_states, input_scale, scatter_idx, num_valid_rows=routing.expert_offsets[-1:],
+                out=(buffers["input"], buffers["input_scale"]),
+            )
             pdl_first = True
     elif moe.gate_up_quant == "group_128":
-        inputs, scales = fp8.quantize_moe(hidden_states, moe.gate_up_quant, scatter_idx=scatter_idx,
-                                          out=(buffers["input"], buffers["input_scale"]))
+        inputs, scales = fp8.quantize_moe(
+            hidden_states, moe.gate_up_quant, scatter_idx=scatter_idx, num_valid_rows=routing.expert_offsets[-1:],
+            out=(buffers["input"], buffers["input_scale"]),
+        )
         pdl_first = True
     else:
         inputs, scales = fp8.scatter_quantize(hidden_states, scatter_idx, capacity,
                                               out=(buffers["input"], buffers["input_scale"]))
         pdl_first = True
-    fp8_nvfp4_grouped_gemm(
-        inputs, scales, moe.w13, routing, rows,
-        out=buffers["gate_up"], config=None if moe.configs is None else moe.configs[0], enable_pdl=pdl_first,
-        group_scales=moe.gate_up_quant == "group_128",
-    )
-    valid_count = routing.expert_offsets[-1:]
-    if activation_fn is not None:
-        activated = (torch.empty((buffers["gate_up"].size(0), moe.w2.shape[2]),
-                                 dtype=torch.bfloat16, device=buffers["gate_up"].device)
-                     if activated_buffer is None else activated_buffer)
-        activation_fn(activated, buffers["gate_up"])
-        fp8.quantize_moe(activated, moe.down_quant, num_valid_rows=valid_count,
-                         out=(buffers["intermediate"], buffers["intermediate_scale"]))
-    elif moe.down_quant == "group_128":
-        fp8.quantize_moe(buffers["gate_up"], moe.down_quant, activation=True,
-                         num_valid_rows=valid_count,
-                         out=(buffers["intermediate"], buffers["intermediate_scale"]))
+    if moe.fuse_swiglu_fp8 and activation_fn is None:
+        e13, n13, k13 = moe.w13.shape
+        use_fused_c1 = (
+            moe.configs[0].block_n == 256 if moe.configs is not None
+            else megamoe.should_fuse_swiglu_contiguous(
+                rows, n13, k13, e13, device=inputs.get_device(), bridge=moe.w13.bridge,
+            )
+        )
+        if use_fused_c1:
+            megamoe.fp8_nvfp4_grouped_gemm_swiglu_fp8(
+                inputs, scales, moe.w13, rows,
+                expert_offsets=routing.expert_offsets,
+                out=(buffers["intermediate"], buffers["intermediate_scale"]),
+                config=None if moe.configs is None else moe.configs[0],
+                enable_pdl=pdl_first,
+            )
+        else:
+            # Multi-token Prefill (`BLOCK_N == 128`): reuse the same interleaved `w13` weights with unfused
+            # `BN=128` grouped GEMM (up to 98.5% H20 peak) + interleaved SwiGLU+FP8 quantization.
+            fp8_nvfp4_grouped_gemm(
+                inputs, scales, moe.w13, routing, rows,
+                out=buffers["gate_up"], config=None if moe.configs is None else moe.configs[0],
+                enable_pdl=pdl_first, group_scales=True,
+            )
+            fp8.quantize_moe(
+                buffers["gate_up"], "group_128", activation=True,
+                num_valid_rows=routing.expert_offsets[-1:],
+                out=(buffers["intermediate"], buffers["intermediate_scale"]),
+                interleaved_gate_up=True,
+            )
     else:
-        fp8.silu_mul_quantize(buffers["gate_up"], num_valid_rows=valid_count,
-                              out=(buffers["intermediate"], buffers["intermediate_scale"]))
+        fp8_nvfp4_grouped_gemm(
+            inputs, scales, moe.w13, routing, rows,
+            out=buffers["gate_up"], config=None if moe.configs is None else moe.configs[0], enable_pdl=pdl_first,
+            group_scales=moe.gate_up_quant == "group_128",
+        )
+        valid_count = routing.expert_offsets[-1:]
+        if activation_fn is not None:
+            activated = (torch.empty((buffers["gate_up"].size(0), moe.w2.shape[2]),
+                                     dtype=torch.bfloat16, device=buffers["gate_up"].device)
+                         if activated_buffer is None else activated_buffer)
+            activation_fn(activated, buffers["gate_up"])
+            fp8.quantize_moe(activated, moe.down_quant, num_valid_rows=valid_count,
+                             out=(buffers["intermediate"], buffers["intermediate_scale"]))
+        elif moe.down_quant == "group_128":
+            fp8.quantize_moe(buffers["gate_up"], moe.down_quant, activation=True,
+                             num_valid_rows=valid_count,
+                             out=(buffers["intermediate"], buffers["intermediate_scale"]))
+        else:
+            fp8.silu_mul_quantize(buffers["gate_up"], num_valid_rows=valid_count,
+                                  out=(buffers["intermediate"], buffers["intermediate_scale"]))
     return fp8_nvfp4_grouped_gemm(
         buffers["intermediate"], buffers["intermediate_scale"], moe.w2, routing, rows,
         out=buffers["output"], config=None if moe.configs is None else moe.configs[1], enable_pdl=True,
@@ -679,23 +744,32 @@ def moe_forward_masked(
                                           out=(buffers["input"], buffers["input_scale"]))
     else:
         inputs, scales = hidden_states, input_scale
-    fp8_nvfp4_grouped_gemm(
-        inputs, scales, moe.w13, routing, rows, out=buffers["gate_up"],
-        config=None if moe.configs is None else moe.configs[0], enable_pdl=input_scale is None,
-        group_scales=moe.gate_up_quant == "group_128",
-    )
-    if activation_fn is not None:
-        experts = moe.w13.shape[0]
-        capacity = buffers["gate_up"].size(0) // experts
-        activated = (torch.empty((buffers["gate_up"].size(0), moe.w2.shape[2]),
-                                 dtype=torch.bfloat16, device=buffers["gate_up"].device)
-                     if activated_buffer is None else activated_buffer)
-        activation_fn(activated.view(experts, capacity, -1), buffers["gate_up"].view(experts, capacity, -1))
-        fp8.quantize_moe(activated, moe.down_quant, expert_counts=routing.expert_counts,
-                         out=(buffers["intermediate"], buffers["intermediate_scale"]))
+    if moe.fuse_swiglu_fp8 and activation_fn is None:
+        megamoe.fp8_nvfp4_grouped_gemm_swiglu_fp8(
+            inputs, scales, moe.w13, rows,
+            expert_counts=routing.expert_counts,
+            out=(buffers["intermediate"], buffers["intermediate_scale"]),
+            config=None if moe.configs is None else moe.configs[0],
+            enable_pdl=input_scale is None,
+        )
     else:
-        fp8.quantize_moe(buffers["gate_up"], moe.down_quant, activation=True, expert_counts=routing.expert_counts,
-                         out=(buffers["intermediate"], buffers["intermediate_scale"]))
+        fp8_nvfp4_grouped_gemm(
+            inputs, scales, moe.w13, routing, rows, out=buffers["gate_up"],
+            config=None if moe.configs is None else moe.configs[0], enable_pdl=input_scale is None,
+            group_scales=moe.gate_up_quant == "group_128",
+        )
+        if activation_fn is not None:
+            experts = moe.w13.shape[0]
+            capacity = buffers["gate_up"].size(0) // experts
+            activated = (torch.empty((buffers["gate_up"].size(0), moe.w2.shape[2]),
+                                     dtype=torch.bfloat16, device=buffers["gate_up"].device)
+                         if activated_buffer is None else activated_buffer)
+            activation_fn(activated.view(experts, capacity, -1), buffers["gate_up"].view(experts, capacity, -1))
+            fp8.quantize_moe(activated, moe.down_quant, expert_counts=routing.expert_counts,
+                             out=(buffers["intermediate"], buffers["intermediate_scale"]))
+        else:
+            fp8.quantize_moe(buffers["gate_up"], moe.down_quant, activation=True, expert_counts=routing.expert_counts,
+                             out=(buffers["intermediate"], buffers["intermediate_scale"]))
     return fp8_nvfp4_grouped_gemm(
         buffers["intermediate"], buffers["intermediate_scale"], moe.w2, routing, rows, out=buffers["output"],
         config=None if moe.configs is None else moe.configs[1], enable_pdl=True,

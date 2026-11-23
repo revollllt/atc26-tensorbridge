@@ -167,13 +167,17 @@ def compile_program(source: str, kernel_name: str, flags: list[str], out_dir: Pa
         nvrtc.nvrtcDestroyProgram(program)
 
     cubin_path = out_dir / "kernel.cubin"
-    cubin_path.write_bytes(cubin)
+    cubin_tmp = out_dir / "kernel.cubin.tmp"
+    cubin_tmp.write_bytes(cubin)
+    os.replace(cubin_tmp, cubin_path)
     meta = {
         "lowered_name": lowered_name.decode(),
         "smem_bytes": read_uint32_symbol(cubin_path, "SMEM_BYTES"),
     }
     # Written last: its presence marks the directory as complete.
-    (out_dir / "meta.json").write_text(json.dumps(meta))
+    meta_tmp = out_dir / "meta.json.tmp"
+    meta_tmp.write_text(json.dumps(meta))
+    os.replace(meta_tmp, out_dir / "meta.json")
 
 
 def build(source: str, kernel_name: str, include_root: Path = INCLUDE_DIR) -> CompiledKernel:
