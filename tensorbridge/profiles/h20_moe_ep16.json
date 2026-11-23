@@ -32,6 +32,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 22,
           "config": [
             8,
@@ -128,6 +129,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 22,
           "config": [
             8,
@@ -238,6 +240,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -320,6 +323,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -416,6 +420,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -526,6 +531,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 6,
           "max_m": 16,
           "config": [
             8,
@@ -594,6 +600,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 6,
           "max_m": 8,
           "config": [
             8,
@@ -718,6 +725,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 6,
           "max_m": 8,
           "config": [
             8,
@@ -828,6 +836,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -938,6 +947,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -1062,6 +1072,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 22,
           "config": [
             8,
@@ -1172,6 +1183,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -1296,6 +1308,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 16384,
           "config": [
             80,
@@ -1350,6 +1363,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 16384,
           "config": [
             80,
@@ -1390,6 +1404,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 22,
           "config": [
             8,
@@ -1486,6 +1501,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 22,
           "config": [
             8,
@@ -1624,6 +1640,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 8192,
           "config": [
             64,
@@ -1692,6 +1709,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 0,
           "config": [
             128,
@@ -1718,6 +1736,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -1828,6 +1847,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -1966,6 +1986,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 8192,
           "config": [
             128,
@@ -2020,6 +2041,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -2130,6 +2152,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 3072,
           "max_m": 24576,
           "config": [
             64,
@@ -2184,6 +2207,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 6,
           "max_m": 8,
           "config": [
             8,
@@ -2294,6 +2318,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 3072,
           "max_m": 6144,
           "config": [
             32,
@@ -2362,6 +2387,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 3072,
           "max_m": 6144,
           "config": [
             48,
@@ -2402,6 +2428,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 6,
           "max_m": 16,
           "config": [
             8,
@@ -2470,6 +2497,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 6,
           "max_m": 8,
           "config": [
             8,
@@ -2552,6 +2580,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 8192,
           "config": [
             64,
@@ -2606,6 +2635,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 0,
           "config": [
             128,
@@ -2632,6 +2662,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -2714,6 +2745,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -2810,6 +2842,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 16384,
           "config": [
             80,
@@ -2864,6 +2897,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 22,
           "config": [
             8,
@@ -2974,6 +3008,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 8192,
           "config": [
             64,
@@ -3014,6 +3049,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -3152,6 +3188,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 16384,
           "config": [
             80,
@@ -3206,6 +3243,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 65536,
           "config": [
             56,
@@ -3260,6 +3298,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 22,
           "config": [
             8,
@@ -3370,6 +3409,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 45,
           "config": [
             8,
@@ -3480,6 +3520,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 8192,
           "config": [
             64,
@@ -3534,6 +3575,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 8192,
           "config": [
             64,
@@ -3588,6 +3630,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -3670,6 +3713,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -3780,6 +3824,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 8192,
           "config": [
             64,
@@ -3848,6 +3893,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -3916,6 +3962,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 3072,
           "max_m": 6144,
           "config": [
             64,
@@ -3984,6 +4031,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 6,
           "max_m": 8,
           "config": [
             8,
@@ -4094,6 +4142,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 3072,
           "max_m": 6144,
           "config": [
             32,
@@ -4134,6 +4183,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 3072,
           "max_m": 6144,
           "config": [
             64,
@@ -4188,6 +4238,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 6,
           "max_m": 8,
           "config": [
             8,
@@ -4270,6 +4321,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 6,
           "max_m": 8,
           "config": [
             8,
@@ -4380,6 +4432,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 32768,
           "config": [
             64,
@@ -4434,6 +4487,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 0,
           "config": [
             64,
@@ -4460,6 +4514,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -4556,6 +4611,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -4666,6 +4722,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 65536,
           "config": [
             56,
@@ -4720,6 +4777,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 90,
           "config": [
             8,
@@ -4816,6 +4874,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 0,
           "config": [
             64,
@@ -4842,6 +4901,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,

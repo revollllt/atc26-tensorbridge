@@ -54,7 +54,7 @@ struct DeviceClass {
 // count, with a warning (`get_device_class` of `launcher.cpp`).
 constexpr DeviceClass kDevices[] = {
         {"h100", "NVIDIA H100 80GB HBM3", 132, 1460.0, 3170.0, false, false, 160, 0, 3, 176, 64, false, 16},
-        {"h20", "NVIDIA H20", 78, 284.0, 3510.0, true, true, 128, 8192, 0, 64, 56, true, 8},
+        {"h20", "NVIDIA H20", 78, 284.0, 3510.0, true, true, 128, 8192, 0, 128, 56, false, 8},
 };
 
 // The class of a device (`exact`), else of the registered device with the closest SM count.

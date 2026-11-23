@@ -14,8 +14,9 @@ import json
 import os
 from collections.abc import Iterable, Sequence
 from pathlib import Path
+from typing import NotRequired, TypedDict
 
-from tensorbridge.jit.codegen import Bridge, GemmConfig, GroupedLayout, pad_to_unit
+from .codegen import Bridge, GemmConfig, GroupedLayout, pad_to_unit
 
 PROFILES_DIR = Path(__file__).resolve().parents[1] / "profiles"
 
@@ -24,10 +25,26 @@ ProfileKey = tuple[str, int, int, int, int, GroupedLayout, bool, Bridge]
 
 @dataclasses.dataclass(frozen=True)
 class ProfileSegment:
-    """One M-range segment: serves `m <= max_m` (`max_m == 0` means unbounded upper tail)."""
+    """One M-range segment: serves `min_m <= m <= max_m` (`max_m == 0` means unbounded upper tail)."""
 
     max_m: int
     config: GemmConfig
+    min_m: int | None = 1
+
+
+class SavedSegment(TypedDict):
+    max_m: int
+    config: list[int]
+    min_m: NotRequired[int | None]
+
+
+def read_segments(records: Sequence[SavedSegment]) -> list[ProfileSegment]:
+    """An old first segment with no lower bound has unknown calibration coverage."""
+    return [
+        ProfileSegment(record["max_m"], GemmConfig.from_list(record["config"]),
+                       record.get("min_m", None if index == 0 else 1))
+        for index, record in enumerate(records)
+    ]
 
 
 _registry: dict[ProfileKey, tuple[ProfileSegment, ...]] = {}
@@ -80,10 +97,6 @@ def load_profile_file(path: Path | str) -> int:
     entries = data["entries"] if isinstance(data, dict) else data
     count = 0
     for entry in entries:
-        segments = [
-            ProfileSegment(int(seg["max_m"]), GemmConfig.from_list(seg["config"]))
-            for seg in entry["segments"]
-        ]
         register_profile(
             device_name=str(entry["device_name"]),
             num_sms=int(entry["num_sms"]),
@@ -93,7 +106,7 @@ def load_profile_file(path: Path | str) -> int:
             layout=entry["layout"],
             group_scales=bool(entry["group_scales"]),
             bridge=entry["bridge"],
-            segments=segments,
+            segments=read_segments(entry["segments"]),
         )
         count += 1
     return count
@@ -119,7 +132,7 @@ def save_profile_file(
                 "group_scales": key[6],
                 "bridge": key[7],
                 "segments": [
-                    {"max_m": seg.max_m, "config": seg.config.to_list()}
+                    {"min_m": seg.min_m, "max_m": seg.max_m, "config": seg.config.to_list()}
                     for seg in _normalize_segments(segs)
                 ],
             }
@@ -136,6 +149,8 @@ def _load_default_sources() -> None:
     if _loaded_default_sources:
         return
     _loaded_default_sources = True
+    if os.environ.get("TENSORBRIDGE_DISABLE_PROFILES") == "1":
+        return
     if PROFILES_DIR.is_dir():
         for json_file in sorted(PROFILES_DIR.glob("*.json")):
             load_profile_file(json_file)
@@ -181,7 +196,11 @@ def lookup(
         return None
     for seg in segments:
         if seg.max_m == 0 or m <= seg.max_m:
-            return seg.config
+            if seg.min_m is None:
+                # A finite first upper edge is at or above its first sample. An
+                # unbounded-only legacy segment supplies no provable lower bound.
+                return seg.config if m == seg.max_m and m > 0 else None
+            return seg.config if m >= seg.min_m else None
     return None
 
 
@@ -210,5 +229,5 @@ def compress_segments(
             next_m = ordered[idx + 1][0]
             # Split at the integer geometric mean between adjacent sampled M values.
             bound = max(m_val, int((m_val * next_m) ** 0.5))
-        segments.append(ProfileSegment(bound, cfg))
+        segments.append(ProfileSegment(bound, cfg, ordered[0][0] if not segments else 1))
     return segments

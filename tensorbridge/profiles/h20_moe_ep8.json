@@ -2,22 +2,15 @@
   "schema_version": 1,
   "metadata": {
     "device_name": "NVIDIA H20",
-    "num_sms_covered": [
-      78,
-      64
-    ],
+    "num_sms": 64,
+    "generated_at": "2026-11-20T13:49:06Z",
     "models": [
       "glm53",
       "dsv41_flash",
       "kimi_k31_pro",
       "muse_spark_816b"
     ],
-    "ep": 8,
-    "skew_weight": 0.5,
-    "source_jobs": [
-      313519,
-      313520
-    ]
+    "skew_weight": 0.5
   },
   "entries": [
     {
@@ -31,6 +24,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 22,
           "config": [
             8,
@@ -155,6 +149,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -265,6 +260,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -389,6 +385,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 6,
           "max_m": 8,
           "config": [
             8,
@@ -513,6 +510,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 6,
           "max_m": 16,
           "config": [
             8,
@@ -595,6 +593,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -719,6 +718,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 22,
           "config": [
             8,
@@ -815,6 +815,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -925,6 +926,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 16384,
           "config": [
             80,
@@ -993,6 +995,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 181,
           "config": [
             8,
@@ -1075,6 +1078,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 8192,
           "config": [
             32,
@@ -1129,6 +1133,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -1253,6 +1258,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 8192,
           "config": [
             48,
@@ -1307,6 +1313,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -1417,6 +1424,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 3072,
           "max_m": 6144,
           "config": [
             40,
@@ -1471,6 +1479,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 6,
           "max_m": 8,
           "config": [
             8,
@@ -1595,6 +1604,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 3072,
           "max_m": 6144,
           "config": [
             32,
@@ -1635,6 +1645,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 6,
           "max_m": 8,
           "config": [
             8,
@@ -1745,6 +1756,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 8192,
           "config": [
             32,
@@ -1799,6 +1811,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -1923,6 +1936,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 16384,
           "config": [
             48,
@@ -1977,6 +1991,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 22,
           "config": [
             8,
@@ -2073,6 +2088,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 8192,
           "config": [
             48,
@@ -2113,6 +2129,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -2223,6 +2240,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 16384,
           "config": [
             80,
@@ -2291,6 +2309,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 22,
           "config": [
             8,
@@ -2401,6 +2420,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 8192,
           "config": [
             32,
@@ -2469,6 +2489,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -2551,6 +2572,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 8192,
           "config": [
             64,
@@ -2591,6 +2613,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -2687,6 +2710,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 3072,
           "max_m": 6144,
           "config": [
             32,
@@ -2741,6 +2765,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 6,
           "max_m": 33,
           "config": [
             8,
@@ -2837,6 +2862,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 3072,
           "max_m": 6144,
           "config": [
             32,
@@ -2891,6 +2917,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 6,
           "max_m": 8,
           "config": [
             8,
@@ -3029,6 +3056,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 8192,
           "config": [
             32,
@@ -3069,6 +3097,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 45,
           "config": [
             8,
@@ -3151,6 +3180,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 16384,
           "config": [
             48,
@@ -3219,6 +3249,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 22,
           "config": [
             8,
@@ -3301,6 +3332,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 4096,
           "max_m": 8192,
           "config": [
             64,
@@ -3341,6 +3373,7 @@
       "bridge": "exact",
       "segments": [
         {
+          "min_m": 8,
           "max_m": 11,
           "config": [
             8,
@@ -3408,6 +3441,1680 @@
             3,
             0,
             1
+          ]
+        },
+        {
+          "max_m": 2048,
+          "config": [
+            32,
+            6,
+            0,
+            0,
+            128,
+            256,
+            1,
+            0,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 70,
+      "n": 6144,
+      "k": 2048,
+      "num_experts": 32,
+      "layout": "masked",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 8,
+          "max_m": 11,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 22,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            128,
+            3,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 45,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 90,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 181,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 362,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 724,
+          "config": [
+            16,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 1448,
+          "config": [
+            32,
+            6,
+            0,
+            0,
+            128,
+            256,
+            1,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 2048,
+          "config": [
+            32,
+            5,
+            0,
+            0,
+            128,
+            256,
+            1,
+            0,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 70,
+      "n": 6144,
+      "k": 2048,
+      "num_experts": 32,
+      "layout": "contiguous",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 4096,
+          "max_m": 8192,
+          "config": [
+            64,
+            5,
+            0,
+            0,
+            128,
+            128,
+            2,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 0,
+          "config": [
+            64,
+            3,
+            0,
+            0,
+            128,
+            128,
+            2,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 70,
+      "n": 5120,
+      "k": 2304,
+      "num_experts": 48,
+      "layout": "masked",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 6,
+          "max_m": 8,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 16,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            128,
+            4,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 33,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            128,
+            3,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 543,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 1086,
+          "config": [
+            16,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 1536,
+          "config": [
+            32,
+            6,
+            0,
+            0,
+            128,
+            256,
+            1,
+            0,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 70,
+      "n": 5120,
+      "k": 2304,
+      "num_experts": 48,
+      "layout": "contiguous",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 3072,
+          "max_m": 0,
+          "config": [
+            64,
+            4,
+            0,
+            0,
+            128,
+            128,
+            2,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 70,
+      "n": 3584,
+      "k": 3072,
+      "num_experts": 112,
+      "layout": "masked",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 8,
+          "max_m": 45,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            128,
+            3,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 90,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 181,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 362,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 724,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 1448,
+          "config": [
+            16,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 2896,
+          "config": [
+            32,
+            6,
+            0,
+            0,
+            128,
+            256,
+            1,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 4096,
+          "config": [
+            48,
+            5,
+            0,
+            0,
+            128,
+            128,
+            2,
+            0,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 70,
+      "n": 3584,
+      "k": 3072,
+      "num_experts": 112,
+      "layout": "contiguous",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 4096,
+          "max_m": 16384,
+          "config": [
+            48,
+            5,
+            0,
+            0,
+            128,
+            128,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 65536,
+          "config": [
+            64,
+            5,
+            0,
+            0,
+            128,
+            128,
+            2,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 0,
+          "config": [
+            56,
+            3,
+            0,
+            0,
+            128,
+            256,
+            1,
+            0,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 70,
+      "n": 4096,
+      "k": 4096,
+      "num_experts": 32,
+      "layout": "masked",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 8,
+          "max_m": 11,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            128,
+            3,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 362,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            128,
+            4,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 724,
+          "config": [
+            16,
+            4,
+            0,
+            0,
+            128,
+            128,
+            3,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 2048,
+          "config": [
+            32,
+            6,
+            0,
+            0,
+            128,
+            256,
+            1,
+            0,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 70,
+      "n": 4096,
+      "k": 4096,
+      "num_experts": 32,
+      "layout": "contiguous",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 4096,
+          "max_m": 8192,
+          "config": [
+            64,
+            5,
+            0,
+            0,
+            128,
+            128,
+            2,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 0,
+          "config": [
+            64,
+            3,
+            0,
+            0,
+            128,
+            128,
+            2,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 78,
+      "n": 6144,
+      "k": 2048,
+      "num_experts": 32,
+      "layout": "masked",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 8,
+          "max_m": 11,
+          "config": [
+            8,
+            6,
+            0,
+            0,
+            128,
+            256,
+            1,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 45,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            128,
+            3,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 181,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 362,
+          "config": [
+            16,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 724,
+          "config": [
+            16,
+            4,
+            0,
+            0,
+            128,
+            128,
+            3,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 1448,
+          "config": [
+            32,
+            6,
+            0,
+            0,
+            128,
+            256,
+            1,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 2048,
+          "config": [
+            32,
+            5,
+            0,
+            0,
+            128,
+            256,
+            1,
+            0,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 78,
+      "n": 6144,
+      "k": 2048,
+      "num_experts": 32,
+      "layout": "contiguous",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 4096,
+          "max_m": 8192,
+          "config": [
+            64,
+            5,
+            0,
+            0,
+            128,
+            128,
+            2,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 0,
+          "config": [
+            64,
+            3,
+            0,
+            0,
+            128,
+            128,
+            2,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 78,
+      "n": 5120,
+      "k": 2304,
+      "num_experts": 48,
+      "layout": "masked",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 6,
+          "max_m": 33,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            128,
+            3,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 67,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            128,
+            4,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 135,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            128,
+            3,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 271,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            128,
+            4,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 543,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            128,
+            3,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 1086,
+          "config": [
+            16,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 1536,
+          "config": [
+            32,
+            6,
+            0,
+            0,
+            128,
+            256,
+            1,
+            0,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 78,
+      "n": 5120,
+      "k": 2304,
+      "num_experts": 48,
+      "layout": "contiguous",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 3072,
+          "max_m": 24576,
+          "config": [
+            64,
+            4,
+            0,
+            0,
+            128,
+            128,
+            2,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 69511,
+          "config": [
+            64,
+            5,
+            0,
+            1,
+            128,
+            128,
+            2,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 0,
+          "config": [
+            64,
+            4,
+            0,
+            0,
+            128,
+            128,
+            2,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 78,
+      "n": 3584,
+      "k": 3072,
+      "num_experts": 112,
+      "layout": "masked",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 8,
+          "max_m": 22,
+          "config": [
+            8,
+            6,
+            0,
+            0,
+            128,
+            128,
+            2,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 45,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 90,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 724,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 1448,
+          "config": [
+            16,
+            4,
+            0,
+            0,
+            128,
+            128,
+            3,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 2896,
+          "config": [
+            24,
+            4,
+            0,
+            0,
+            128,
+            256,
+            1,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 4096,
+          "config": [
+            48,
+            5,
+            0,
+            0,
+            128,
+            128,
+            2,
+            0,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 78,
+      "n": 3584,
+      "k": 3072,
+      "num_experts": 112,
+      "layout": "contiguous",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 4096,
+          "max_m": 16384,
+          "config": [
+            48,
+            5,
+            0,
+            0,
+            128,
+            128,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 65536,
+          "config": [
+            64,
+            5,
+            0,
+            1,
+            128,
+            128,
+            2,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 0,
+          "config": [
+            56,
+            3,
+            0,
+            0,
+            128,
+            256,
+            1,
+            0,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 78,
+      "n": 4096,
+      "k": 4096,
+      "num_experts": 32,
+      "layout": "masked",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 8,
+          "max_m": 11,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            128,
+            3,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 22,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            128,
+            4,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 90,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            128,
+            3,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 181,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 724,
+          "config": [
+            16,
+            4,
+            0,
+            0,
+            128,
+            128,
+            3,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 1448,
+          "config": [
+            32,
+            6,
+            0,
+            0,
+            128,
+            256,
+            1,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 2048,
+          "config": [
+            32,
+            5,
+            0,
+            0,
+            128,
+            256,
+            1,
+            0,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 78,
+      "n": 4096,
+      "k": 4096,
+      "num_experts": 32,
+      "layout": "contiguous",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 4096,
+          "max_m": 8192,
+          "config": [
+            64,
+            4,
+            0,
+            0,
+            128,
+            128,
+            1,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 0,
+          "config": [
+            64,
+            3,
+            0,
+            0,
+            128,
+            128,
+            2,
+            0,
+            1
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 64,
+      "n": 6144,
+      "k": 2048,
+      "num_experts": 32,
+      "layout": "masked",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 8,
+          "max_m": 11,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 22,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            128,
+            3,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 90,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 181,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 362,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 724,
+          "config": [
+            16,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 1448,
+          "config": [
+            32,
+            6,
+            0,
+            0,
+            128,
+            256,
+            1,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 2048,
+          "config": [
+            32,
+            4,
+            0,
+            0,
+            128,
+            256,
+            1,
+            0,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 64,
+      "n": 5120,
+      "k": 2304,
+      "num_experts": 48,
+      "layout": "masked",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 6,
+          "max_m": 8,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            128,
+            3,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 16,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            128,
+            4,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 33,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            128,
+            4,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 271,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 1086,
+          "config": [
+            16,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 1536,
+          "config": [
+            32,
+            6,
+            0,
+            0,
+            128,
+            256,
+            1,
+            0,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 64,
+      "n": 3584,
+      "k": 3072,
+      "num_experts": 112,
+      "layout": "masked",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 8,
+          "max_m": 22,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            128,
+            4,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 45,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            128,
+            3,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 90,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 362,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 724,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 1448,
+          "config": [
+            16,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 2896,
+          "config": [
+            24,
+            6,
+            0,
+            0,
+            128,
+            256,
+            1,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 4096,
+          "config": [
+            48,
+            5,
+            0,
+            0,
+            128,
+            128,
+            2,
+            0,
+            2
+          ]
+        }
+      ]
+    },
+    {
+      "device_name": "NVIDIA H20",
+      "num_sms": 64,
+      "n": 4096,
+      "k": 4096,
+      "num_experts": 32,
+      "layout": "masked",
+      "group_scales": true,
+      "bridge": "exact",
+      "segments": [
+        {
+          "min_m": 8,
+          "max_m": 11,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 22,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            128,
+            3,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 45,
+          "config": [
+            8,
+            4,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
+          ]
+        },
+        {
+          "max_m": 181,
+          "config": [
+            8,
+            5,
+            0,
+            0,
+            128,
+            128,
+            4,
+            0,
+            1
+          ]
+        },
+        {
+          "max_m": 724,
+          "config": [
+            16,
+            5,
+            0,
+            0,
+            128,
+            256,
+            2,
+            0,
+            2
           ]
         },
         {

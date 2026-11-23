@@ -13,33 +13,45 @@ InputQuant = Literal["per_token", "group_128"]
 @triton.jit(do_not_specialize=["rows", "output_rows"])
 def scatter_fp8_rows(
     input_ptr: tl.tensor, scale_ptr: tl.tensor, output_ptr: tl.tensor, output_scale_ptr: tl.tensor,
-    scatter_ptr: tl.tensor, input_stride: tl.constexpr, scale_stride_m: tl.constexpr, scale_stride_k: tl.constexpr,
+    scatter_ptr: tl.tensor, valid_rows_ptr: tl.tensor, input_stride: tl.constexpr,
+    scale_stride_m: tl.constexpr, scale_stride_k: tl.constexpr,
     rows: tl.tensor, width: tl.constexpr, output_rows: tl.tensor, groups: tl.constexpr, top_k: tl.constexpr,
-    block: tl.constexpr,
+    block_k: tl.constexpr, block_g: tl.constexpr, bounded: tl.constexpr,
 ) -> None:
     tl.extra.cuda.gdc_launch_dependents()
-    row = (tl.program_id(0) * 4 + tl.arange(0, 4)).to(tl.int64)
-    group = tl.program_id(1)
-    columns = group * block + tl.arange(0, block)
-    valid = row < rows
-    values = tl.load(input_ptr + row[:, None] * input_stride + columns[None, :],
-                     valid[:, None] & (columns[None, :] < width), other=0.0)
-    scales = tl.load(scale_ptr + row * scale_stride_m + group * scale_stride_k, valid, other=1.0)
+    row = tl.program_id(0).to(tl.int64)
+    if row >= rows:
+        return
+    destination_rows = tl.load(valid_rows_ptr).to(tl.int64) if bounded else output_rows.to(tl.int64)
+    has_local = 0
     for route in tl.static_range(top_k):
-        target = tl.load(scatter_ptr + row * top_k + route, valid, other=output_rows)
-        local = valid & (target >= 0) & (target < output_rows)
-        tl.store(output_ptr + target[:, None].to(tl.int64) * width + columns[None, :], values,
-                 local[:, None] & (columns[None, :] < width))
-        tl.store(output_scale_ptr + target.to(tl.int64) * groups + group, scales, local)
+        target = tl.load(scatter_ptr + row * top_k + route).to(tl.int64)
+        has_local += tl.where((target >= 0) & (target < destination_rows), 1, 0)
+    if has_local > 0:
+        g_offs = tl.arange(0, block_g)
+        g_mask = g_offs < groups
+        scales = tl.load(scale_ptr + row * scale_stride_m + g_offs * scale_stride_k, g_mask, other=1.0)
+        for route in tl.static_range(top_k):
+            target = tl.load(scatter_ptr + row * top_k + route).to(tl.int64)
+            if (target >= 0) & (target < destination_rows):
+                tl.store(output_scale_ptr + target * groups + g_offs, scales, g_mask)
+        for k_start in tl.static_range(0, width, block_k):
+            cols = k_start + tl.arange(0, block_k)
+            c_mask = cols < width
+            vals = tl.load(input_ptr + row * input_stride + cols, c_mask, other=0.0)
+            for route in tl.static_range(top_k):
+                target = tl.load(scatter_ptr + row * top_k + route).to(tl.int64)
+                if (target >= 0) & (target < destination_rows):
+                    tl.store(output_ptr + target * width + cols, vals, c_mask)
 
 
 def scatter_fp8(
     inputs: torch.Tensor, input_scale: torch.Tensor, scatter_idx: torch.Tensor,
-    *, out: tuple[torch.Tensor, torch.Tensor],
+    *, out: tuple[torch.Tensor, torch.Tensor], num_valid_rows: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Scatter pre-quantized FP8 `[T, K]` rows and FP32 `[T, groups]` scales to expert-ordered
     `out` (`[R, K]` FP8, `[R, groups]` FP32) at `scatter_idx` (`[T, top_k]` int32), skipping
-    targets outside `[0, R)` and releasing PDL dependents early."""
+    targets outside the local expert prefix (all R rows when no bound is supplied)."""
     if not (inputs.is_cuda and inputs.dtype == torch.float8_e4m3fn and inputs.dim() == 2 and inputs.stride(1) == 1):
         raise ValueError("inputs must be an FP8 E4M3 CUDA matrix with unit stride along K")
     if not (input_scale.is_cuda and input_scale.dtype == torch.float32 and input_scale.dim() == 2):
@@ -49,12 +61,16 @@ def scatter_fp8(
     rows, width = inputs.shape
     groups = input_scale.size(1)
     output, output_scale = out
-    block = 128 if groups > 1 else triton.next_power_of_2(width)
+    block_k = min(2048, triton.next_power_of_2(max(128, width)))
+    block_g = triton.next_power_of_2(max(1, groups))
+    warps = 8 if block_k >= 2048 else 4
     if rows > 0:
-        scatter_fp8_rows[(triton.cdiv(rows, 4), groups)](
-            inputs, input_scale, output, output_scale, scatter_idx, inputs.stride(0),
-            input_scale.stride(0), input_scale.stride(1), rows, width, output.size(0), groups,
-            scatter_idx.size(1), block, num_warps=4, num_stages=1,
+        scatter_fp8_rows[(rows,)](
+            inputs, input_scale, output, output_scale, scatter_idx,
+            num_valid_rows if num_valid_rows is not None else scatter_idx,
+            inputs.stride(0), input_scale.stride(0), input_scale.stride(1),
+            rows, width, output.size(0), groups, scatter_idx.size(1),
+            block_k, block_g, num_valid_rows is not None, num_warps=warps, num_stages=1,
         )
     return output, output_scale
 
@@ -67,15 +83,17 @@ def quantize_moe_rows(
     capacity: tl.constexpr, output_rows: tl.tensor, groups: tl.constexpr, top_k: tl.constexpr, block: tl.constexpr,
     activation: tl.constexpr, masked: tl.constexpr, bounded: tl.constexpr, scatter: tl.constexpr,
     m_major_scales: tl.constexpr = False, scale_stride_k: tl.constexpr = 0,
-    rows_per_tile: tl.constexpr = 4,
+    rows_per_tile: tl.constexpr = 4, interleaved_gate_up: tl.constexpr = False,
 ) -> None:
     tl.extra.cuda.gdc_launch_dependents()
     row_start = (tl.program_id(0) * rows_per_tile).to(tl.int64)
     n_valid = tl.load(counts_ptr).to(tl.int64) if bounded else row_start + rows_per_tile
-    if (not bounded) or (row_start < n_valid):
+    if scatter or (not bounded) or (row_start < n_valid):
         group = tl.program_id(1)
         columns = group * block + tl.arange(0, block)
         col_mask = columns < width
+        gate_cols = (group * (2 * block) + tl.arange(0, block)) if (activation and interleaved_gate_up) else columns
+        up_cols = (gate_cols + block) if (activation and interleaved_gate_up) else (width + columns)
         if rows_per_tile == 1 and not scatter:
             if masked:
                 valid = (row_start < rows) & (
@@ -86,9 +104,11 @@ def quantize_moe_rows(
             else:
                 valid = row_start < rows
             if valid:
-                input_values = tl.load(input_ptr + row_start * input_stride + columns, col_mask, other=0).to(tl.float32)
+                input_values = tl.load(input_ptr + row_start * input_stride + gate_cols, col_mask, other=0).to(tl.float32)
                 if activation:
-                    up = tl.load(input_ptr + row_start * input_stride + width + columns, col_mask, other=0).to(tl.float32)
+                    up = tl.load(
+                        input_ptr + row_start * input_stride + up_cols, col_mask, other=0
+                    ).to(tl.float32)
                     silu = tl.extra.cuda.libdevice.div_rn(
                         input_values, 1.0 + tl.extra.cuda.libdevice.exp(-input_values)).to(tl.bfloat16)
                     values = (silu.to(tl.float32) * up).to(tl.bfloat16).to(tl.float32)
@@ -105,14 +125,14 @@ def quantize_moe_rows(
             row = row_start + tl.arange(0, rows_per_tile).to(tl.int64)
             if masked:
                 valid = (row < rows) & (row % capacity < tl.load(counts_ptr + row // capacity, row < rows, other=0))
-            elif bounded:
+            elif bounded and not scatter:
                 valid = (row < rows) & (row < n_valid)
             else:
                 valid = row < rows
-            input_values = tl.load(input_ptr + row[:, None] * input_stride + columns[None, :],
+            input_values = tl.load(input_ptr + row[:, None] * input_stride + gate_cols[None, :],
                                    valid[:, None] & col_mask[None, :], other=0).to(tl.float32)
             if activation:
-                up = tl.load(input_ptr + row[:, None] * input_stride + width + columns[None, :],
+                up = tl.load(input_ptr + row[:, None] * input_stride + up_cols[None, :],
                              valid[:, None] & col_mask[None, :], other=0).to(tl.float32)
                 silu = tl.extra.cuda.libdevice.div_rn(
                     input_values, 1.0 + tl.extra.cuda.libdevice.exp(-input_values)).to(tl.bfloat16)
@@ -124,7 +144,8 @@ def quantize_moe_rows(
             if scatter:
                 for route in tl.static_range(top_k):
                     target = tl.load(scatter_ptr + row * top_k + route, row < rows, other=output_rows)
-                    local = valid & (target >= 0) & (target < output_rows)
+                    destination_rows = n_valid if bounded else output_rows
+                    local = valid & (target >= 0) & (target < destination_rows)
                     tl.store(output_ptr + target[:, None].to(tl.int64) * width + columns[None, :], quantized,
                              local[:, None] & col_mask[None, :])
                     tl.store(scale_ptr + target.to(tl.int64) * groups + group, scales, local)
@@ -226,17 +247,23 @@ def quantize_moe(
     inputs: torch.Tensor, mode: InputQuant, *, activation: bool = False,
     expert_counts: torch.Tensor | None = None, num_valid_rows: torch.Tensor | None = None,
     scatter_idx: torch.Tensor | None = None, out: tuple[torch.Tensor, torch.Tensor],
+    interleaved_gate_up: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Quantize valid MoE rows, optionally fusing SiLU-mul or expert scatter.
 
     Masked input is flattened [E * capacity, K]; counts bound each expert separately.
-    Scales are FP32 [output rows, 1 or ceil(K/128)]. Invalid capacity stays unread.
+    Scales are FP32 [output rows, 1 or ceil(K/128)]. With scatter, num_valid_rows bounds
+    destination indices. Every source token can still have a local route.
+    When `interleaved_gate_up=True` (with `activation=True` and `mode=="group_128"`),
+    expects 128-channel interleaved `[gate_0, up_0, gate_1, up_1, ...]` layout.
     """
     rows = inputs.size(0)
     width = inputs.size(1) // (2 if activation else 1)
     output, scales = out
     if rows == 0:
         return output, scales
+    if interleaved_gate_up and not (activation and mode == "group_128" and expert_counts is None and scatter_idx is None):
+        raise ValueError("interleaved_gate_up requires activation=True, mode='group_128', and contiguous layout")
     groups = triton.cdiv(width, 128) if mode == "group_128" else 1
     block = 128 if mode == "group_128" else triton.next_power_of_2(width)
     if expert_counts is not None and scatter_idx is None:
@@ -262,14 +289,19 @@ def quantize_moe(
         return output, scales
 
     capacity = rows // expert_counts.numel() if expert_counts is not None else 1
-    rows_per_tile = 1 if (mode == "per_token" and scatter_idx is None) else 4
+    if mode == "per_token" and scatter_idx is None:
+        rows_per_tile = 1
+    elif mode == "group_128" and activation and scatter_idx is None and expert_counts is None and rows >= 1024:
+        rows_per_tile = 8
+    else:
+        rows_per_tile = 4
     warps = num_warps(block) if rows_per_tile == 1 else 4
     quantize_moe_rows[(triton.cdiv(rows, rows_per_tile), groups)](
         inputs, output, scales, expert_counts if expert_counts is not None else num_valid_rows, scatter_idx,
         inputs.stride(0), rows, width, capacity, output.size(0), groups,
         1 if scatter_idx is None else scatter_idx.size(1), block,
         activation, expert_counts is not None, num_valid_rows is not None, scatter_idx is not None,
-        False, 0, rows_per_tile,
+        False, 0, rows_per_tile, interleaved_gate_up,
         num_warps=warps, num_stages=1,
     )
     return output, scales

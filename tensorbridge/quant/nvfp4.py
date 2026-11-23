@@ -28,18 +28,25 @@ import triton
 import triton.language as tl
 
 from tensorbridge.jit.codegen import Bridge, pad_to_unit
+from tensorbridge.quant.modelopt import (
+    E2M1_MAX,
+    E2M1_MIDPOINTS,
+    E4M3_MAX,
+    GROUP_SIZE,
+    RAW_SCALE_MAX,
+    RAW_SCALE_MIN,
+)
+from tensorbridge.quant.modelopt import (
+    QuantMode as QuantMode,
+)
+from tensorbridge.quant.modelopt import (
+    quantize_fp8_block_to_nvfp4_modelopt as quantize_fp8_block_to_nvfp4_modelopt,
+)
+from tensorbridge.quant.modelopt import (
+    quantize_modelopt as quantize_modelopt,
+)
 
-GROUP_SIZE = 16
-E2M1_MAX = 6.0
-E4M3_MAX = 448.0
-
-# The bridge adds the scale byte to `sign << 7 | magnitude << 2` without carry
-# between byte lanes, which bounds the raw E4M3 scale byte to this range.
 PREFOLD_DELTA = 0x1C
-RAW_SCALE_MIN, RAW_SCALE_MAX = 0x1C, 0x7E
-
-# Rounding boundaries between the E2M1 magnitudes 0, 0.5, 1, 1.5, 2, 3, 4, 6.
-E2M1_MIDPOINTS = (0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5.0)
 
 
 @dataclasses.dataclass
@@ -206,6 +213,52 @@ def prepare_experts(
                       else global_scale.float().view(num_experts)) * E2M1_MAX,
         locks=stacked.locks,
         bridge=bridge,
+    )
+
+
+def interleave_gate_up_experts(experts: NVFP4Experts) -> NVFP4Experts:
+    """Offline pack `[E, 2*I, K]` gate-then-up `NVFP4Experts` into 128-channel interleaved `(gate_128, up_128)` pairs.
+
+    Because `prepare_experts` operates strictly within each 128-channel tile, interleaving 128-channel blocks on
+    already-prepared weights and scales is exact and zero-loss, enabling `BLOCK_N=256` fused
+    `SwiGLU + group-128 FP8` epilogue with zero cross-CTA reduction.
+    """
+    num_experts, two_i, k = experts.shape
+    if two_i % 256 != 0:
+        raise ValueError(f"interleave_gate_up_experts requires N = 2*I to be a multiple of 256, got {two_i}")
+    num_groups = two_i // 256
+    weight = (
+        experts.weight.reshape(num_experts, 2, num_groups, 128, k // 8)
+        .permute(0, 2, 1, 3, 4)
+        .reshape(num_experts, two_i, k // 8)
+        .contiguous()
+    )
+    if experts.scale.dim() == 4:
+        # group-128 layout: [E, K/128, 2*I, 8]
+        k_blocks = experts.scale.size(1)
+        scale = (
+            experts.scale.reshape(num_experts, k_blocks, 2, num_groups, 128, 8)
+            .permute(0, 1, 3, 2, 4, 5)
+            .reshape(num_experts, k_blocks, two_i, 8)
+            .contiguous()
+        )
+    elif experts.scale.dim() == 3:
+        # per-token layout: [E, K/16, 2*I]
+        k_groups = experts.scale.size(1)
+        scale = (
+            experts.scale.reshape(num_experts, k_groups, 2, num_groups, 128)
+            .permute(0, 1, 3, 2, 4)
+            .reshape(num_experts, k_groups, two_i)
+            .contiguous()
+        )
+    else:
+        raise ValueError(f"Expected 3D or 4D expert scale tensor, got dim={experts.scale.dim()}")
+    return NVFP4Experts(
+        weight=weight,
+        scale=scale,
+        global_scale=experts.global_scale,
+        locks=experts.locks,
+        bridge=experts.bridge,
     )
 
 

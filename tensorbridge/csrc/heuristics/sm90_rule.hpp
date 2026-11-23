@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <stdexcept>
 #include <utility>
@@ -112,6 +113,18 @@ inline std::vector<GemmConfig> group_scale_preferences(const GemmDesc &desc, con
                                                        int64_t stream_k_override) {
     if (desc.num_experts > 0) {
         const int64_t active = std::min(desc.m, desc.num_experts);
+        // Small-M Decode (`avg_m <= 4`): `BM = 8, BN = 256, CTA = 2` hides NVFP4 weight-load latency far better
+        // than `BM = 16, CTA = 1` (empirically -14 to -63 us/layer on H20 EP8 across m = 8..128).
+        std::vector<GemmConfig> preferences;
+        if (desc.m <= 4 * desc.num_experts && desc.n % 256 == 0) {
+            for (const int64_t ctas : {2, 1}) {
+                for (const int64_t stages : {5, 4, 3}) {
+                    GemmConfig config;
+                    config.block_m = 8, config.num_stages = stages, config.block_n = 256, config.ctas_per_sm = ctas;
+                    preferences.push_back(config);
+                }
+            }
+        }
         const int64_t m = ceil_div(desc.m, desc.num_experts) +
                           (desc.m >= desc.num_experts ? rule_class.grouped_group_scale_headroom : 0);
         auto grouped_tile = [&](int64_t block_n) {
@@ -128,7 +141,6 @@ inline std::vector<GemmConfig> group_scale_preferences(const GemmDesc &desc, con
         const bool wide = rule_class.grouped_group_scale_bn256_block_m > 0 && desc.n % 256 == 0 &&
                           (rule_class.grouped_group_scale_bn256_always ||
                            m <= rule_class.grouped_group_scale_bn256_block_m);
-        std::vector<GemmConfig> preferences;
         for (const int64_t block_n : wide ? std::vector<int64_t>{256, 128} : std::vector<int64_t>{128}) {
             const int64_t block_m = grouped_tile(block_n);
             const int64_t min_clean = group_scale_census_block_m_range(desc, block_n, false).first;
@@ -199,7 +211,13 @@ inline std::vector<GemmConfig> rule_pass(const GemmDesc &desc, double ridge_flop
     const bool dense = desc.num_experts == 0;
     const int64_t experts = std::max<int64_t>(desc.num_experts, 1);
     const int64_t active = std::min(desc.m, experts);
-    const int64_t most_rows = ceil_div(desc.m, experts);
+    int64_t most_rows = ceil_div(desc.m, experts);
+    // Sparse contiguous routing: a tile exactly at the mean reloads weights for every
+    // expert just above it. Budget two Poisson standard deviations within a 64-row tile.
+    if (desc.layout == GroupedLayout::Contiguous && experts > 1 && most_rows < 64) {
+        const double mean = static_cast<double>(desc.m) / experts;
+        most_rows = std::min<int64_t>(64, static_cast<int64_t>(std::ceil(mean + 2 * std::sqrt(mean))));
+    }
     // FLOP per DRAM byte: NVFP4 weights of the occupied experts (0.5625 B each), FP8 activations, BF16 output.
     const double intensity = double(2 * desc.m * desc.n * desc.k) /
                              (double(active * desc.n * desc.k * 9) / 16 + double(desc.m * desc.k) +

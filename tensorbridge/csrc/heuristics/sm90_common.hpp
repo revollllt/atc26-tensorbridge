@@ -153,7 +153,7 @@ inline uint32_t clean_one_warpgroup_block_ms(int64_t block_k, int64_t num_stages
 }
 
 // The clean token tiles of one-math-warp-group group-scale kernels (`sm90_w4a8_pgroup.cuh`, `math_warpgroups` 1),
-// populated by `benchmarks/census_pgroup.py`: contiguous and masked, BN 128, BK 128, no Stream-K;
+// measured for contiguous and masked layouts (BN 128, BK 128, no Stream-K);
 // by (ctas_per_sm - 2; num_stages - 3) for 2 to 4 CTAs/SM and 3 to 6 ring slots, bit i for BM 8 (i + 1).
 inline uint32_t clean_pgroup_one_warpgroup_block_ms(int64_t ctas_per_sm, int64_t block_n, int64_t num_stages) {
     constexpr uint32_t kMasks[3][4] = {
