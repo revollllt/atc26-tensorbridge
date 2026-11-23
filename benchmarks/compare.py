@@ -24,25 +24,18 @@ import sys
 from pathlib import Path
 from typing import TypedDict
 
-import torch
-
 import bench_deepgemm
 import bench_humming
 import bench_marlin
 import bench_tensorbridge
 import bench_torch
 import common
+import torch
 from common import MoeShape, Shape
+
 from tensorbridge.jit import runtime
 
 SUITES = sorted(path.stem for path in common.SHAPES_DIR.glob("*.csv"))
-ENTRIES = [
-    *bench_tensorbridge.entries(),
-    *bench_humming.entries(),
-    *[entry for entry in bench_torch.entries() if entry.name.startswith("torch_fp8")],
-    *bench_deepgemm.entries(),
-    *bench_marlin.entries(),
-]
 RESULT_COLUMNS = [
     "suite", "kernel", "layout", "M", "N", "K", "projection", "tp", "ep", "rank", "num_experts",
     "top_k", "tokens", "distribution", "l2_mode", "copies", "median_us", "min_us", "max_us", "spread",
@@ -157,6 +150,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--shard", help="INDEX/COUNT: only the shapes of every COUNT-th distinct weight (N, K) of "
                         "each suite, in file order, starting at weight INDEX (0-based), to split a suite over jobs")
     parser.add_argument("--out", type=Path, help="output directory (default benchmarks/runs/DATE-COMMIT)")
+    parser.add_argument("--bridge", choices=("exact", "fpma"), default="exact")
+    parser.add_argument("--group-128", action="store_true", help="compare TensorBridge and Humming at FP8 group-128")
     args = parser.parse_args()
     unknown_suites = [name for name in args.suites if name not in SUITES and not name.endswith(".csv")]
     if unknown_suites:
@@ -171,6 +166,16 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    registered = [
+        *bench_tensorbridge.entries(bridge=args.bridge, group_128=args.group_128),
+        *bench_humming.entries(only_group_128=args.group_128),
+    ]
+    if not args.group_128:
+        registered.extend([
+            *[entry for entry in bench_torch.entries() if entry.name.startswith("torch_fp8")],
+            *bench_deepgemm.entries(),
+            *bench_marlin.entries(),
+        ])
     timing = common.Timing.from_arguments(args)
     suites: dict[str, list[Shape]] = {name: common.load_suite(name, args.limit) for name in args.suites}
     if args.shard is not None:
@@ -192,12 +197,14 @@ def main() -> int:
         run_dir = runs_dir / f"{run_id}-{suffix}"
     run_dir.mkdir(parents=True, exist_ok=True)
     meta = {
+        "bridge": args.bridge,
+        "group_128": args.group_128,
         "run_id": run_dir.name,
         "device": device,
         "kernels": [
             {"name": entry.name, "role": entry.role, "library": entry.library, "layout": entry.layout,
              "version": entry.version, "weight_format": entry.weight_format, "bytes_per_weight": entry.bytes_per_weight}
-            for entry in ENTRIES
+            for entry in registered
         ],
         "timing": dataclasses.asdict(timing),
         "suites": {name: len(shapes) for name, shapes in suites.items()},
@@ -214,10 +221,10 @@ def main() -> int:
         for suite, shapes in suites.items():
             for index, shape in enumerate(shapes):
                 if isinstance(shape, MoeShape):
-                    entries = [entry for entry in ENTRIES if entry.shape_kind == "moe"
+                    entries = [entry for entry in registered if entry.shape_kind == "moe"
                                and (not shape.layout or entry.layout == shape.layout)]
                 else:
-                    entries = [entry for entry in ENTRIES if entry.shape_kind == "dense"]
+                    entries = [entry for entry in registered if entry.shape_kind == "dense"]
                 attempts = common.prepare_and_check(shape, entries, timing, device["l2_bytes"])
                 round_us = common.time_attempts(attempts, timing)
                 written = [result_row(suite, shape, attempt, round_us.get(attempt["entry"].name, []), device)

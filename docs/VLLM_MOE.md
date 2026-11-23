@@ -1,65 +1,91 @@
-# vLLM MoE integration
+# vLLM MoE Integration
 
-TensorBridge supplies NVFP4 expert computation through vLLM 0.32.0's modular MoE interface.
-vLLM retains checkpoint parsing and sharding, routing, prepare/finalize, dispatch/combine,
-TP reduction and shared-expert scheduling. The adapter is an explicit opt-in.
+TensorBridge supplies Hopper (SM90) NVFP4 linear and routed-expert execution through vLLM 0.32.0's
+general plugin mechanism (`tensorbridge.vllm_plugin:register`, implemented in `tensorbridge/vllm/`).
+vLLM source files are never patched: vLLM retains checkpoint parsing, sharding, routing, communication,
+reduction, and shared-expert scheduling.
 
-## Enable the adapter
+## Quick Start & Unified Presets
 
-Install TensorBridge with the vLLM extra and the CUDA major version used by PyTorch:
+Install TensorBridge with the `vllm` extra and the CUDA major version matching PyTorch:
 
 ```bash
 pip install --no-build-isolation '.[cu13,vllm]'
-vllm serve MODEL --additional-config '{"tensorbridge":{"moe":true,"exact":true,"moe_dispatch_dtype":"fp8","moe_gate_up_quant":"group_128","moe_down_quant":"group_128"}}'
+
+# 1. Existing NVFP4 checkpoint (ModelOpt or compressed-tensors; any offline quantizer)
+vllm serve NVFP4_MODEL --additional-config '{"tensorbridge":{"moe":true,"exact":true,"moe_dispatch_dtype":"fp8","moe_gate_up_quant":"group_128","moe_down_quant":"group_128"}}'
+
+# 2. Block-128 FP8 MoE checkpoint (e.g., GLM-5.3) with unified scale-up presets
+vllm serve FP8_MODEL --data-parallel-size 8 --enable-expert-parallel \
+  --all2all-backend allgather_reducescatter \
+  --additional-config '{"tensorbridge":{"preset":"tb_nvfp4_fp8","strict_moe":true}}'
 ```
 
-The checkpoint keeps its native quantization method, which vLLM detects; `"linear": true` also hands
-its NVFP4 linear layers to TensorBridge, otherwise they keep their native method. The general plugin
-entry point extends the compressed-tensors and ModelOpt configs; vLLM source files are not patched.
+| Preset | Precision (W × A) | Dispatch & Execution | Primary Role |
+| --- | --- | --- | --- |
+| `tb_nvfp4_fp8` | Exact NVFP4 × per-token FP8 | BF16 AG/RS, inherits `HummingGroupedExperts.apply` with TensorBridge NVFP4 GEMMs | Decode-optimized apples-to-apples NVFP4×FP8 |
+| `tb_nvfp4_fp8_g128` | Exact NVFP4 × group-128 FP8 | FP8 AG/RS, adaptive fused SwiGLU+FP8 (`BN=256`) / multi-token Prefill (`BN=128` + interleaved SwiGLU) | Best Prefill TTFT, high-batch throughput & top accuracy |
+| `tb_nvfp4_megamoe` | Exact NVFP4 × group-128 FP8 | Single-node `NVLinkSymmetricEP`: MegaMoE (`T ≤ 256`) + early `shared_experts` overlap + single-shot Contiguous Prefill (`T > 256`) | Best overall Decode TPOT, competitive Prefill TTFT, +3.25–4.18 GiB KV cache |
 
-| Option under `additional_config.tensorbridge` | Default | Values |
+See [`docs/MEGAMOE.md`](MEGAMOE.md) for the MegaMoE & Prefill architecture and verified 8×H20 GLM-5.3 results.
+
+When using a preset on a block-128 FP8 checkpoint, only routed experts are converted on-the-fly on GPU
+to standard ModelOpt NVFP4; dense layers, attention, and shared experts remain in native FP8.
+
+## Configuration Options
+
+All options live under `additional_config.tensorbridge`:
+
+| Option | Default | Values / Description |
 | --- | --- | --- |
-| `linear` | `false` | Enable NVFP4 linear layers |
-| `moe` | `false` | Enable NVFP4 routed experts |
-| `exact` | `true` | Exact bridge; `false` requires FPMA-aware weights |
-| `linear_quant` | `per_token` | `per_token`, `group_128`; applies to NVFP4 linear layers |
-| `moe_dispatch_dtype` | `fp8` | `fp8`, `bf16`; applies to EP dispatch |
-| `moe_gate_up_quant` | `group_128` with FP8 EP dispatch; otherwise `per_token` | `per_token`, `group_128` |
-| `moe_down_quant` | `per_token` | `per_token`, `group_128` |
+| `preset` | *(none)* | `tb_nvfp4_fp8`, `tb_nvfp4_fp8_g128`, `tb_nvfp4_megamoe` |
+| `linear` | `false` | Enable TensorBridge for NVFP4 dense linear layers |
+| `moe` | `false` | Enable TensorBridge for NVFP4 routed experts |
+| `exact` | `true` | Exact E4M3 weight bridge; `false` requires FPMA-aware weights |
+| `linear_quant` | `group_128` | `group_128`, `per_token` (NVFP4 dense linear activations) |
+| `moe_dispatch_dtype` | `fp8` | `fp8`, `bf16` (EP dispatch dtype; `fp8` requires `group_128` gate/up) |
+| `moe_gate_up_quant` | `group_128` | `group_128`, `per_token` |
+| `moe_down_quant` | `group_128` | `group_128`, `per_token` |
+| `moe_backend_mode` | `standard` | `standard`, `fused_swiglu`, `megamoe`, `humming_grouped` |
+| `moe_nvlink_ep` | `false` | Enable single-node `NVLinkSymmetricEP` (requires active EP group) |
+| `moe_shared_reserve_sms` | `0` | SMs withheld from persistent MegaMoE (`(total_sms - reserve_sms) * ctas_per_sm` CTAs) for concurrent local `shared_experts` |
+| `moe_max_tokens_per_rank` | `256` | Chunk capacity per rank for `NVLinkSymmetricEP` MegaMoE (`T > cap` uses single-shot Contiguous Prefill) |
+| `fp8_to_nvfp4` | `false` | On-the-fly GPU conversion of block-128 FP8 routed experts to ModelOpt NVFP4 |
+| `nvfp4_quant_mode` | `mse_7ulp` | On-the-fly quantizer: `mse_7ulp`, `four_over_six`, `bridge_aware`, `rtn` |
+| `strict_moe` | `false` | Raise instead of falling back to native vLLM MoE on unsupported layers |
+| `fp8_moe_baseline` | `None` | Native FP4 baseline adapters for benchmarking: `marlin_nvfp4`, `humming_nvfp4`, `humming_mxfp4`, `humming_mxfp4_g128` |
 
-Gate/up and down input quantization are independent and fixed at initialization. FP8 dispatch
-requires gate/up group-128; an explicit incompatible setting fails at initialization. Experts
-consume dispatched FP8 activations and scales directly. Combine remains BF16.
+## Checkpoint Compatibility vs. On-the-Fly Quantization
 
-## Formats and execution
+- **Pre-quantized NVFP4 checkpoints (`ModelOpt`, `ModelOptMixed`, `compressed-tensors`)**: TensorBridge
+  accepts any valid NVFP4 checkpoint layout (`packed uint8 [N, K/2]`, `weight_scale fp8_e4m3 [N, K/16]`,
+  `weight_scale_2` / `weight_global_scale fp32`) regardless of how the checkpoint was produced offline
+  (RTN, AWQ, GPTQ, Four-Over-Six, MSE-opt, etc.). Compressed-tensors stores inverse global scales;
+  ModelOpt stores multipliers. Fused shards with differing global scales are aligned via
+  `serving.share_global_scale`.
+- **On-the-fly FP8 → NVFP4 conversion (`tensorbridge/quant/modelopt.py`)**: Used only when quantizing
+  a block-128 FP8 checkpoint during model load (`fp8_to_nvfp4: true` or `fp8_moe_baseline`). Produces
+  100% standard ModelOpt NVFP4 tensors with zero inference/kernel overhead:
+  - `mse_7ulp` *(default)*: Searches 7 adjacent E4M3 ULP scale bytes (`offsets -2..+4` around `amax/6`,
+    covering both mild outlier clipping and Four-Over-Six) against the consuming backend's decoded levels.
+  - `four_over_six`: Evaluates scales targeting E2M1 magnitudes `6` and `4` per 16-element group.
+  - `bridge_aware`: Keeps RTN scales (`amax/6`) and rounds codes against the consuming bridge's actual
+    E4M3 decoded levels.
+  - `rtn`: Original ModelOpt round-to-nearest conversion.
+  - TensorBridge scores candidates against its selected `exact` or `fpma` bridge decoder; native W4A16
+    baselines (`marlin_nvfp4`, `humming_nvfp4`) score direct dequantization. All-zero groups retain exact
+    zero scales and codes, and FP32 staging tiles are capped to keep conversion peak VRAM under 512 MiB.
 
-The adapter reuses native compressed-tensors, ModelOpt NVFP4 and ModelOpt mixed-recipe parameter
-names, declarations and loaders. Ignored layers and other quantization recipes retain native
-methods. Conversion runs once after TP/EP sharding. Prepared weights, scales and locks belong to
-the layer; native MoE compute methods are not instantiated before selecting TensorBridge.
+## Execution Layouts & Scope
 
-Compressed-tensors global scales are inverse scales; ModelOpt global scales are multipliers.
-The kernels apply one global scale per expert (per dense weight), so fused shards with different global scales
-(an expert's gate and up; q/k/v or gate/up of a dense layer) take the largest, and the other shards' E4M3 group
-scales are multiplied by their own over the largest and rounded (`serving.share_global_scale`). vLLM's native
-NVFP4 path takes the largest without changing the group scales. FPMA is checked with synthetic FPMA-aware weights.
-
-| Execution | Expert layout | Activation preparation and reduction |
+| Execution | Expert Layout | Activation Preparation & Reduction |
 | --- | --- | --- |
-| Local / TP | Indexed | Native alignment and weighted sum; reuse alignment when both GEMMs select the same BM |
-| DeepEP HT | Contiguous | Fused BF16 scatter/quantize, or fused FP8 + group-128 scale scatter; native unpermute/combine |
-| DeepEP LL | Masked | Native expert buffers, device counts and actual scale strides; delegated weighted combine |
+| Local / TP | `indexed` | Native `moe_align_block_size` and weighted sum |
+| AG/RS & DeepEP HT | `contiguous` | Fused scatter/quantize (or `HummingGroupedExperts` for `tb_nvfp4_fp8`); native unpermute/combine |
+| DeepEP LL | `masked` | Native expert buffers and device counts; delegated weighted combine |
+| Single-node NVLink EP | `masked` (`T ≤ cap`) / `contiguous` (Prefill) | `NVLinkSymmetricEP` MegaMoE (`4×` route-striped dispatch + direct NVLink Down epilogue) + early `shared_experts` overlap |
 
-Group-128 extends the existing group-scale mainloop to these three layouts. It applies each K128
-activation scale to that group's partial accumulation. Per-token computation retains its existing
-mainloop. Grouped Stream-K is not supported. Routes, offsets and counts stay on the GPU, and invalid
-capacity is not read. Workspaces and permute scratch follow native per-ubatch/lane lifetimes and
-support DBO as well as graph replay with changed routes.
-
-The supported scope is Hopper SM90, BF16 layer input, group-16 NVFP4 weights and grouped dimensions
-divisible by 128. Standard un-clamped SiLU runs the fused SiLU-mul quantizer; other gated and
-non-gated MoE activations reuse vLLM's modular activation kernels. Layers outside this scope (bias,
-router weights on input, LoRA, EPLB, PP, other EP backends or non-128-multiple local MoE shapes)
-fall back to vLLM's native method with a single warning; prepared-weight snapshots remain outside this scope. Multi-node EP,
-complete-model compressed-tensors/FPMA quality, multimodal quality and general task accuracy have
-not been evaluated.
+Supported scope: Hopper SM90, BF16 layer input, group-16 NVFP4 weights, grouped dimensions divisible by
+128, no bias / LoRA / EPLB / PP, and `apply_router_weight_on_input=False`. Standard unclamped SiLU uses
+the fused SwiGLU + FP8 epilogue (or adaptive `BN=128` + interleaved SwiGLU for large Prefill); other
+gated/non-gated activations reuse vLLM's modular activations.

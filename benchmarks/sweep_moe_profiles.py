@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Two-stage offline full-space MoE config sweeper for model-specific profiles (Route A2).
+"""Two-stage offline full-space MoE config sweeper for model-specific SM90 profiles.
 
 Sweeps `gate_up` (group_128 / pgroup) and `down` (per_token / ptoken and/or group_128 / pgroup)
-across our target MoE models (GLM 5.3, DeepSeek v4.1 Flash, Kimi K3.1 Pro, Muse-Spark-Open-816B-A42B)
+across target MoE models (GLM 5.3, DeepSeek v4.1 Flash, Kimi K3.1 Pro, Muse-Spark-Open-816B-A42B)
 and writes piecewise `(max_m, GemmConfig)` profiles consumable by `tensorbridge.jit.profiles`.
 
-Example (full GPU SMs, then Green Context compute SM budgets):
-    TENSORBRIDGE_NUM_SMS=132 python benchmarks/sweep_moe_profiles.py --models glm53 dsv41_flash kimi_k31_pro muse_spark_816b --ep 8 16 --output tensorbridge/profiles/h100_moe.json --explore-all
-    TENSORBRIDGE_NUM_SMS=112 python benchmarks/sweep_moe_profiles.py --models glm53 dsv41_flash kimi_k31_pro muse_spark_816b --ep 8 16 --output tensorbridge/profiles/h100_moe.json --merge --explore-all
+Example:
+    sweep="benchmarks/sweep_moe_profiles.py"
+    out="tensorbridge/profiles/h20_moe_ep8.json"
+    TENSORBRIDGE_NUM_SMS=78 python "$sweep" --ep 8 --output "$out" --explore-all
 """
 
 from __future__ import annotations
@@ -15,7 +16,6 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
-import math
 import multiprocessing
 import os
 import statistics
@@ -200,7 +200,7 @@ def main() -> None:
     parser.add_argument("--projections", nargs="+", default=["gate_up", "down"], choices=["gate_up", "down"])
     parser.add_argument("--ep", nargs="+", type=int, default=[8, 16])
     parser.add_argument("--layouts", nargs="+", default=["masked", "contiguous"], choices=["masked", "contiguous"])
-    parser.add_argument("--down-quant", default="per_token", choices=["per_token", "group_128", "both"])
+    parser.add_argument("--down-quant", default="group_128", choices=["per_token", "group_128", "both"])
     parser.add_argument("--bridge", default="exact", choices=["exact", "fpma"])
     parser.add_argument("--explore-all", action="store_true",
                         help="Enumerate resource-legal configs (check_clean=False) and filter spills via NVRTC")
@@ -212,7 +212,6 @@ def main() -> None:
     parser.add_argument("--merge", action="store_true", help="Merge into existing --output JSON file if present")
     args = parser.parse_args()
 
-    import common
     import torch
     from common import MoeShape
 
@@ -236,10 +235,7 @@ def main() -> None:
                 entry["device_name"], int(entry["num_sms"]), int(entry["n"]), int(entry["k"]),
                 int(entry["num_experts"]), entry["layout"], bool(entry["group_scales"]), entry["bridge"],
             )
-            existing_entries[key] = [
-                profiles.ProfileSegment(int(s["max_m"]), codegen.GemmConfig.from_list(s["config"]))
-                for s in entry["segments"]
-            ]
+            existing_entries[key] = profiles.read_segments(entry["segments"])
 
     compile_cache: dict[tuple[int, int, int, str, tuple[int, ...], bool], bool] = {}
     ctx = multiprocessing.get_context("spawn")
@@ -250,16 +246,18 @@ def main() -> None:
         for proj in args.projections:
             n = spec.gate_up_n if proj == "gate_up" else spec.down_n
             k = spec.gate_up_k if proj == "gate_up" else spec.down_k
-            quant_modes = [True] if proj == "gate_up" else (
-                [False] if args.down_quant == "per_token" else [True] if args.down_quant == "group_128" else [False, True]
-            )
+            quant_modes = [True] if proj == "gate_up" else {
+                "per_token": [False], "group_128": [True], "both": [False, True]
+            }[args.down_quant]
             for ep in args.ep:
                 local_e = spec.num_experts // ep
                 weight_bytes = local_e * n * k * 9 / 16
                 copies = max(2, autotune.weight_copies(weight_bytes, l2_bytes))
                 for group_scales in quant_modes:
                     # Prepare weight copies once per (model, proj, ep, group_scales).
-                    dummy_shape = MoeShape(proj, 1, n, k, spec.num_experts, spec.top_k, 1, "equal", 0, ep, 0, "masked", 128)
+                    dummy_shape = MoeShape(
+                        proj, 1, n, k, spec.num_experts, spec.top_k, 1, "equal", 0, ep, 0, "masked", 128
+                    )
                     weight_copies = _prepare_weights(dummy_shape, args.bridge, group_scales, copies)
 
                     for layout in args.layouts:
@@ -274,8 +272,10 @@ def main() -> None:
                               f"{layout} g128={group_scales} ({len(all_cfgs)} legal cfgs) ===")
 
                         for tokens in tokens_list:
-                            shape_eq = MoeShape(proj, 1, n, k, spec.num_experts, spec.top_k, tokens, "equal", 0, ep, 0, layout, cap)
-                            shape_sk = MoeShape(proj, 1, n, k, spec.num_experts, spec.top_k, tokens, "zipf", 0, ep, 0, layout, cap)
+                            shape_eq = MoeShape(
+                                proj, 1, n, k, spec.num_experts, spec.top_k, tokens, "equal", 0, ep, 0, layout, cap
+                            )
+                            shape_sk = dataclasses.replace(shape_eq, distribution="zipf")
                             inp_eq = _prepare_moe_inputs(shape_eq, weight_copies, layout, group_scales)
                             if inp_eq is None:
                                 continue
@@ -363,7 +363,9 @@ def main() -> None:
                                 f"mfast={int(best_cfg.m_fast_tile_order)}"
                             )
                             print(line)
-                            summary_rows.append(f"{model_name}/{proj}/EP{ep}/{layout}/g128={int(group_scales)}: {line.strip()}")
+                            summary_rows.append(
+                                f"{model_name}/{proj}/EP{ep}/{layout}/g128={int(group_scales)}: {line.strip()}"
+                            )
 
                         if measured_points:
                             pkey: profiles.ProfileKey = (
@@ -373,7 +375,7 @@ def main() -> None:
                             existing_entries[pkey] = profiles.compress_segments(
                                 measured_points, unbounded_tail=(layout == "contiguous"),
                             )
-                    del weight_copies
+                    weight_copies.clear()
                     torch.cuda.empty_cache()
 
     profiles.save_profile_file(
