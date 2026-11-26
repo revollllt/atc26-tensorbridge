@@ -1,6 +1,6 @@
 # MegaMoE & Multi-Token Prefill
 
-TensorBridge's `tb_nvfp4_megamoe` preset provides single-node Expert Parallelism (EP ≤ 16) over NVLink P2P
+TensorBridge's `tb_nvfp4_megamoe` preset provides single-node Expert Parallelism (EP ≤ 8) over NVLink P2P
 with **zero external communication dependencies** (no DeepEP, no NVSHMEM). Built on PyTorch's native
 `torch.distributed._symmetric_memory`, `NVLinkSymmetricEP` executes both latency-sensitive Decode and
 throughput-bound Prefill on **one shared HBM weight copy** (`w13` interleaved group-128 NVFP4 + `w2`
@@ -134,6 +134,27 @@ Measured via `benchmarks/bench_moe_layer_ep8_compare.py` (CUDA-Graph median end-
 
 `tb_nvfp4_megamoe` beats `sgl_pr53_sm90_mxfp4_megamoe` on all `T=1..128` by **1.13×–1.81×** and
 `sgl_pr53_sm90_fp8_megamoe` by **1.10×–1.38×**, while achieving 27% lower relative RMS error (`0.1511` vs `0.2076`).
+
+### 4. Real Full-Model Accuracy (WikiText-2 PPL & Official vLLM 5-Shot GSM8K)
+
+Measured on the real 78-layer **GLM-5.3** checkpoint (`DP=8, TP=1, EP=8` for 4-bit modes with `mse_7ulp` and
+`--strict-moe`; `DP=1, TP=8, EP=8` eager for `native_fp8`, BF16 KV cache):
+- **WikiText-2 PPL**: `benchmarks/eval_wikitext_ppl.py` (`seqlen=2048`, 141 windows, BF16 head + `raw_logprobs`).
+- **GSM8K**: unmodified upstream vLLM `tests/evals/gsm8k/gsm8k_eval.py` (`num_questions=1319`, `num_shots=5`,
+  `max_tokens=256`, `temperature=0.0`, `seed=42`, `invalid_rate=0.00%` across all modes).
+
+| Mode | WikiText-2 PPL | Δ PPL vs FP8 | GSM8K Accuracy (5-shot) | Δ GSM8K (pp) | GSM8K Throughput (tok/s) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `native_fp8` (`TP=8, eager`) | 2.8027 | +0.0000 | 91.43% (1206/1319) | +0.00 | 166.4 |
+| **`tb_nvfp4_megamoe`** | **2.8610** | **+0.0583** | **92.04% (1214/1319) (#1)** | **+0.61** | **1,089.5 (#1)** |
+| **`tb_nvfp4_fp8_g128`** | **2.8596 (#1 4-bit)** | **+0.0568** | 91.13% (1202/1319) | −0.30 | 846.6 |
+| `humming_nvfp4` (W4A16) | 2.8612 | +0.0584 | 91.89% (1212/1319) | +0.45 | 788.3 |
+| `humming_mxfp4_g128` | 2.8973 | +0.0946 | 90.30% (1191/1319) | −1.14 | 781.9 |
+
+`tb_nvfp4_megamoe` ranks **#1 on upstream vLLM GSM8K in both accuracy (`92.04%`, `+1.74 pp` over
+`humming_mxfp4_g128`) and throughput (`1,089.5 tok/s`, `1.39×` vs `humming_mxfp4_g128`, `1.38×` vs
+`humming_nvfp4`)**, while matching `tb_nvfp4_fp8_g128` and `humming_nvfp4` on WikiText-2 PPL (**38%–40% less
+PPL degradation** than `humming_mxfp4_g128`).
 
 ---
 

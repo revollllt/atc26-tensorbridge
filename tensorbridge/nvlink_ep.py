@@ -58,8 +58,8 @@ class NVLinkSymmetricEP:
         self.ep_group = ep_group
         self.ep_rank = dist.get_rank(ep_group)
         self.ep_size = dist.get_world_size(ep_group)
-        if self.ep_size > 16:
-            raise ValueError(f"NVLinkSymmetricEP supports single-node ep_size <= 16, got {self.ep_size}")
+        if self.ep_size > 8:
+            raise ValueError(f"NVLinkSymmetricEP supports single-node ep_size <= 8, got {self.ep_size}")
 
         if device is None:
             self.device_idx = torch.cuda.current_device()

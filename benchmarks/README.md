@@ -142,6 +142,30 @@ BF16/`raw_logprobs` server:
 python benchmarks/eval_wikitext_ppl.py --wikitext-path /path/to/wikitext-2-raw-v1-test.txt
 ```
 
+### GSM8K Accuracy (Official vLLM `gsm8k_eval.py`, 5-Shot, Full 1,319 Test Split)
+
+GSM8K accuracy is evaluated directly with vLLM's unmodified upstream script
+[`tests/evals/gsm8k/gsm8k_eval.py`](https://github.com/vllm-project/vllm/blob/main/tests/evals/gsm8k/gsm8k_eval.py)
+against a running `vllm serve` endpoint (`num_questions=1319`, `num_shots=5`, `max_tokens=256`, `temperature=0.0`,
+`seed=42`). On offline compute nodes, place `train.jsonl` and `test.jsonl` in a shared directory and pass
+`TMPDIR=<dir>` to `gsm8k_eval.py` (keep local `/tmp` for `vllm serve`):
+
+```bash
+# 1. Start vLLM 0.32 server (DP=8, TP=1, EP=8 for 4-bit modes; DP=1, TP=8, EP=8 --enforce-eager for native_fp8)
+vllm serve /path/to/GLM-5.3 --served-model-name glm53 --port 8123 \
+  --data-parallel-size 8 --tensor-parallel-size 1 --enable-expert-parallel \
+  --all2all-backend allgather_reducescatter --dtype bfloat16 --max-model-len 2048 \
+  --max-num-seqs 64 --max-num-batched-tokens 4096 --gpu-memory-utilization 0.90 \
+  --compilation-config '{"cudagraph_capture_sizes":[1,2,4,8,16,32,64]}' \
+  --additional-config '{"tensorbridge":{"preset":"tb_nvfp4_megamoe","strict_moe":true}}'
+
+# 2. Run upstream vLLM gsm8k_eval.py (for slow eager native_fp8 > 600s, call evaluate_gsm8k with request_timeout_seconds=2400)
+TMPDIR=/path/to/gsm8k_jsonl_dir python3 /path/to/vllm/tests/evals/gsm8k/gsm8k_eval.py \
+  --host http://127.0.0.1 --port 8123 --num-questions 1319 --num-shots 5 \
+  --max-tokens 256 --temperature 0.0 --seed 42 --max-concurrency 128 \
+  --save-results results/gsm8k/tb_nvfp4_megamoe.json
+```
+
 ### Two-Node Isolated Prefill & Decode Capacity (PD-Disaggregated)
 
 Runs one independent DP8+EP8 server per node: Node 0 measures isolated Prefill (`--pd-role prefill --decode-len 1`),

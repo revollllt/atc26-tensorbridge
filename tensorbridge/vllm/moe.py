@@ -141,8 +141,8 @@ def unsupported_moe_reason(
     ):
         return "humming_grouped requires AG/RS expert parallelism and standard SwiGLU"
     if use_nvlink_ep:
-        if parallel.ep_size > 16:
-            return f"moe_nvlink_ep supports single-node ep_size <= 16, got {parallel.ep_size}"
+        if parallel.ep_size > 8:
+            return f"moe_nvlink_ep supports single-node ep_size <= 8, got {parallel.ep_size}"
         if moe.num_local_experts > 128:
             return f"moe_nvlink_ep requires local_e <= 128, got {moe.num_local_experts}"
         if not uses_fused_silu(moe) or not moe.is_act_and_mul:

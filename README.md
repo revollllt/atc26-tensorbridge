@@ -30,8 +30,12 @@ On an 8× NVIDIA H20 node (`DP=2, TP=4, EP=8`, FP8 KV cache, GLM-5.3 FP8 checkpo
   W4A16 `humming_nvfp4` by **6.7%–13.4%**.
 - **Single-Layer EP8 MoE & Accuracy**: `tb_nvfp4_megamoe` beats `sgl_pr53_sm90_mxfp4_megamoe` by
   **1.13×–1.81×** and `sgl_pr53_sm90_fp8_megamoe` by **1.10×–1.38×** across `T=1..128` (uniform, CUDA
-  Graph), while `mse_7ulp` NVFP4 achieves **2.8596** WikiText-2 PPL (`+0.057` vs native FP8 `2.8027`,
-  **40% less degradation** than `humming_mxfp4_g128` `2.8973`).
+  Graph). On full-model accuracy (`mse_7ulp`), `tb_nvfp4_megamoe` and `tb_nvfp4_fp8_g128` achieve
+  **2.8610 / 2.8596** WikiText-2 PPL (`+0.058 / +0.057` vs native FP8 `2.8027`, **38%–40% less
+  degradation** than `humming_mxfp4_g128` `2.8973`), and on vLLM's upstream 5-shot GSM8K
+  (`tests/evals/gsm8k/gsm8k_eval.py`, N=1,319), `tb_nvfp4_megamoe` ranks **#1 in both accuracy
+  (`92.04%` vs native FP8 `91.43%`, `+1.74 pp` over `humming_mxfp4_g128` `90.30%`) and throughput
+  (`1,089.5 tok/s`, `1.39×` vs `humming_mxfp4_g128`)**.
 
 ![8xH20 GLM-5.3 PD Serving](docs/images/h20_glm53_pd_serving.png)
 ![8xH20 GLM-5.3 EP8 MegaMoE & WikiText-2 PPL](docs/images/h20_ep8_megamoe_and_ppl.png)
